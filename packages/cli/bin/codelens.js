@@ -7,5 +7,5 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const tsx = require.resolve('tsx/cli');
 const entry = fileURLToPath(new URL('../src/index.ts', import.meta.url));
-const { status } = spawnSync(process.execPath, [tsx, entry, ...process.argv.slice(2)], { stdio: 'inherit' });
+const { status } = spawnSync(process.execPath, ['--liftoff-only', tsx, entry, ...process.argv.slice(2)], { stdio: 'inherit' });
 process.exit(status ?? 1);

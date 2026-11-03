@@ -1,6 +1,9 @@
 # CodeLens
 
-Visual-first progressive code review. Instead of a line-by-line unified diff, CodeLens turns a git diff into an interactive review:
+Visual-first code understanding. CodeLens has two modes:
+
+- **Explore** a whole package or repository to learn how it works: a zoomed-out map of its systems and modules, entry points to start reading from, hotspots, external effects, search, and a *what / why* for every function. A local store remembers what you have already seen, so re-exploring after a `git pull` only processes new code and tells you what changed.
+- **Review** a diff. Instead of a line-by-line unified diff, CodeLens turns a git diff into an interactive review:
 
 1. **Impact map**: one changed function at the center, upstream callers to the left, downstream callees and external effects (database, network, filesystem, …) to the right. A **Detail** control zooms out from Function → File → Module → System. Detail falls off with distance, so near neighbors stay specific and far ones fold into their file, module, or system.
 2. **Invariants**: what could fail, the evidence for it, and who relies on it
@@ -27,11 +30,56 @@ Then open http://localhost:5173.
 | double-click a function | re-center the map on it (breadcrumbs track the path) |
 | double-click a group | open it in place; double-click again to fold it |
 | click `+N more` | expand a capped column |
+| double-click `+N more files in …` | show everything folded into that card (overview) |
 | `−` / `+` | zoom detail out / in |
-| `←` / `→` | previous / next change in review order |
+| `←` / `→` | previous / next change in review order (entry point in explore mode) |
+| `/` | search functions, files, and modules |
+| `o` | zoom out to the overview |
 | `1`–`3`, `Esc`, `Backspace` | switch tab, clear selection, go back |
 
-## Analyze your own repo
+## Explore a codebase
+
+```bash
+# Map any package, repository, or plain folder of code and open it in the canvas
+npm run explore -- ~/code/some-repo --open
+
+# Just one package of a monorepo (calls into the rest of the repo stay as one hop of context)
+npm run explore -- ~/code/some-repo/services/billing --open
+
+# With AI descriptions through your Claude Code subscription (cached: you pay once per function)
+npm run explore -- ~/code/some-repo -p claude-code --open
+
+# A specific commit or branch instead of the files on disk
+npm run explore -- ~/code/some-repo --ref v2.1.0 --open
+
+# What have I explored, and what is in the store?
+npm run codelens -- history
+```
+
+The canvas opens on the **overview**: the package's systems or modules, connected by call volume, with the databases, network, queues and filesystems they touch. Use **Detail** to switch between System, Module, and File; double-click a part to open it in place, or a function to center on it. **Tests** toggles test code. The side panel lists:
+- **Start reading here**: entry points (mains, routes, CLI commands, jobs, public API). `←` / `→` steps through them.
+- **Hotspots**: the functions that hold the package together. They are ranked by callers, callees, how many modules they connect, and how much of the code reaches them.
+- **Talks to**: external effects.
+- **New or changed since last look**, when you have explored this scope before.
+
+Press `/` to search functions, files, and modules, and `o` to return to the overview.
+
+**Cards** caps how many cards any view draws: 25 by default, or 40, 80, or All, remembered per browser. In the overview, the least important parts fold into one "+N more files in src/lang" card per parent. Importance comes from the selection, entry points, hotspots, recent change, size, and connectivity. Folded cards keep their connections, so the map still shows where the hidden code is and what it talks to. Double-click one to show its contents, or use **show all**. In the focused view, the per-column cap shrinks so all columns together stay within the limit. Parts with no calls either way are packed into a grid beside the flow instead of one tall column.
+
+### The store
+
+Everything CodeLens learns is kept in one SQLite database (Node's built-in `node:sqlite`, no extra dependency) at `~/.cache/codelens/store.db`. Move it with `--store <file>` or `CODELENS_STORE`, or bypass it with `--no-store`.
+
+| Table | Keyed by | Holds |
+|---|---|---|
+| `parses` | git blob id + extractor version | the extracted functions, calls, and imports of one file's content |
+| `descriptions` | hash of provider + function (or group) content | *what / why* text |
+| `snapshots` | repo + scope, with commit id and tree hash | what was explored, when, at which commit |
+| `snapshot_fns` | snapshot + function id | each function's fingerprint, to compute "new / changed since" |
+
+Because everything is keyed by **content**, the store works across branches, rebases, and uncommitted edits. A file that is unchanged since any earlier run is never read or parsed again, and an unchanged function is never described again. The commit id on each snapshot is what "since your last look (abc1234)" refers to. The extractor version is a hash of the parser code itself, so upgrading CodeLens automatically re-parses with the new rules. Old JSON description caches are imported on first use.
+
+## Review your own diffs
 
 ```bash
 # Uncommitted changes vs HEAD (default)
@@ -81,34 +129,86 @@ Patterns are globs (`*`, `**`, `?`). `path#name` matches a function by qualified
 | `--full` | Emit the whole repo graph instead of the impacted subgraph |
 | `--enrich [provider]` | Run enrichment inline (`heuristic`, `claude-code`, or `claude`) |
 
+## Languages
+
+TypeScript, TSX, JavaScript, Python, Java, Kotlin, Scala, C#, Go, Rust, C, C++, Swift, Ruby, and PHP. Run `npm run codelens -- languages` to see which file extensions each one claims.
+
+For every language, CodeLens extracts:
+- functions, methods, and constructors, with qualified names (`Billing.Service.run`)
+- parameters, return types, `async`/`suspend`, and visibility
+- doc comments and docstrings
+- decorators, annotations, and attributes
+- calls with their receivers, imports, and throw/raise/panic sites
+
+Each language plugin also knows its ecosystem:
+- how imports map to files (relative paths, Java packages, Go modules, Rust `crate::` paths, C `#include`)
+- which code is visible without an import (same package or directory)
+- test-file conventions
+- route, test, and job annotations
+- which packages count as databases, HTTP clients, queues, and other sinks
+
+### Adding a language
+
+Each language is one self-contained file in `packages/cli/src/lang/`, registered in `lang/index.ts`. A plugin is a `LanguageSpec` (`lang/spec.ts`) made of:
+
+1. **A Tree-sitter query** that tags definitions and references with a small set of captures: `@fn` / `@fn.name`, `@scope` / `@scope.name` (classes), `@namespace`, `@call` / `@call.name` / `@call.receiver`, `@import` / `@import.source` / `@import.name`, and `@throw`. The language-agnostic engine (`lang/engine.ts`) does the rest. Calls are attributed to their innermost named function, so calls inside anonymous callbacks still count.
+2. **Optional hooks** for things grammars disagree on, such as parameters, visibility, return types, or docstrings. Generic defaults cover most grammars.
+3. **Ecosystem knowledge**: `resolveImport`, `selfNames`, `implicitThis`, `sameDirectoryVisible`, `testFile`, `sinks` (effectful packages), and `sinkCalls` (effectful calls that have no telltale import, like C's `fopen`).
+
+The workflow:
+
+```bash
+# see the syntax tree (node types and field names) your query needs to match
+node --liftoff-only packages/cli/scripts/ast.mjs <grammar> path/to/sample.ext
+# add a fixture in packages/cli/test/fixtures/<lang>/ and a CASES entry in test/languages.test.ts
+npm test
+```
+
+The test suite fails if a registered language has no fixture case. Any grammar bundled in `tree-sitter-wasms` can be used, including Dart, Elixir, Lua, OCaml, Zig, Solidity, Bash, and others.
+
 ## How it works
 
-**Parsing** (`packages/cli/src/parse.ts`): Tree-sitter (WASM, via `web-tree-sitter@0.22` + `tree-sitter-wasms`) extracts functions, methods, and arrow functions, along with their signatures, call sites, `throw`/`raise` statements, and imports. Supported: TypeScript, TSX, JavaScript, Python.
+**Parsing** (`packages/cli/src/parse.ts`, `src/lang/`): Tree-sitter (WASM, via `web-tree-sitter@0.22` + `tree-sitter-wasms`) runs each language plugin's query over the file. Some grammars (Swift, Kotlin, C#) exhaust V8's optimizing WebAssembly compiler, so the CLI always runs Node with `--liftoff-only`. It relaunches itself with the flag if needed, and parsing is no slower.
 
-**Graph** (`packages/cli/src/graph.ts`): each changed file is parsed at both revisions, and functions are matched by qualified name to classify them as added, modified, or deleted. Calls are resolved by name, preferring same class, then same file, then imported files, then a globally unique match. Low-confidence matches are marked as such. Calls to a function deleted in the diff become **dangling** edges. Graphology runs a reverse BFS outward from each change to compute caller depth and the transitive caller count.
+**Graph** (`packages/cli/src/graph.ts`, `resolve.ts`): each changed file is parsed at both revisions, and functions are matched by qualified name to classify them as added, modified, or deleted. Calls are resolved by name, without type information, in this order:
+1. the caller's own class (`this` / `self` / a Go receiver, or implicit `this` in Java, C#, and similar)
+2. the same file
+3. the same package
+4. imported modules, packages, or classes, including `Class.staticMethod()` and `new Foo().bar()`
+5. fields named after their class (`payments.charge()` → `Payments.charge`)
+6. a globally unique name, as a last resort. This step never applies to method names every standard library has (`get`, `push`, `close`, …), because `map.get()` is far likelier than your one `get` method.
+
+Calls outside any named function belong to a per-file **top level** pseudo-function. Examples are CLI wiring, `app.post('/x', …)` route registration, `test(...)` blocks, and `if __name__ == "__main__"`. In scripts, servers, and `bin/` files it counts as an entry point.
+
+Low-confidence matches are marked as such. Calls to a function deleted in the diff become **dangling** edges. Graphology runs a reverse BFS outward from each change to compute caller depth and the transitive caller count.
 
 **Enrichment** (`packages/cli/src/enrich.ts`, `claude.ts`):
 - `heuristic` runs offline and is deterministic. It diffs signatures to find contract breaks (required params added or removed, type changes, sync↔async), flags protective constructs the diff removed as invariants at risk (null guards, validation calls, bounds checks, try/catch, locks), and scores blast radius from reach, exported surface, breaking changes, and dangling callers.
 - `claude-code` runs `claude -p` with a JSON schema for each changed function. It uses your signed-in Claude Code subscription, so it needs no API key. Defaults to `--model opus`.
 - `claude` sends each changed function to Claude Opus 5.5 (`claude-opus-5-5`), together with its callers, callees, and the heuristic findings. It uses structured outputs (Zod), server-side refusal fallback, and per-node fallback to the heuristic result on error. Pick another model with `--model`.
 
-**Descriptions** (`packages/cli/src/purpose.ts`): every function gets a *what / why*, written in batches of 10 per request. Files, modules, and systems are then summarized bottom-up from their members; a group with one child reuses that child's summary. Results are cached by content hash in `~/.cache/codelens/`, so re-runs only pay for new or edited code. Pass `--no-purpose` to skip this step or `--cache <file>` to move the cache. Without an LLM, descriptions fall back to doc comments and call context.
+**Descriptions** (`packages/cli/src/purpose.ts`): every function gets a *what / why*, written in batches of 10 per request. Files, modules, and systems are then summarized bottom-up from their members; a group with one child reuses that child's summary. Results are kept in the store by content hash, so re-runs only pay for new or edited code. Pass `--no-purpose` to skip this step. Without an LLM, descriptions fall back to doc comments and call context.
 
 Providers implement the small `EnrichmentProvider` interface, so you can add OpenAI, local models, or anything else without touching the pipeline.
 
 ## Layout
 
 ```
-packages/cli   parser, graph builder, enrichers, CLI (tsx, no build step)
-packages/web   Vite + React + @xyflow/react + dagre canvas
-scripts/       demo repo generator
+packages/cli/src/lang   one plugin per language + the query engine
+packages/cli/src        graph builders (graph.ts review, explore.ts explore, build.ts shared), call resolution,
+                        snapshots (source.ts), the store (store.ts), enrichers, CLI (tsx, no build step)
+packages/cli/test       per-language fixtures and end-to-end repo tests (npm test)
+packages/web            Vite + React + @xyflow/react + dagre canvas
+scripts/                demo repo generator
 ```
 
 ## Known limits (MVP)
 
-- Call resolution is name-based, not type-based. Dynamic dispatch and same-named methods across classes can be missed; these show as dotted "inferred" edges or are omitted.
+- Call resolution is name-based, not type-based. Dynamic dispatch, interfaces with many implementations, and same-named methods across classes can be missed; these show as dotted "inferred" edges or are omitted. Precise resolution would need language servers or compilers.
+- Visibility for C#, Swift, and Kotlin is approximated by directory, since namespaces and modules can span directories.
 - Renamed functions appear as one deletion plus one addition.
 - Member calls (`obj.method()`) only resolve to methods, or to functions reached through a namespace import, so the tool never guesses across unrelated objects. Unresolved member calls feed sink detection instead.
 - The impact map shows edges between adjacent hops only; the panel lists every caller and callee.
-- The per-change risk analysis (`enrichNode`) is not cached yet; descriptions are.
+- The per-change risk analysis (`enrichNode`) is not cached yet; parses and descriptions are.
+- A function's *why* is cached with its own source, so it can go stale when only its callers change.
 - Large graphs (thousands of nodes) need the planned PixiJS renderer. React Flow is comfortable up to a few hundred.

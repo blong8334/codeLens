@@ -5,7 +5,8 @@
   "scripts": {
     "inspect": "tsx src/index.ts inspect",
     "enrich": "tsx src/index.ts enrich",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --liftoff-only --import tsx --test test/*.test.ts"
   },
   "type": "module",
   "dependencies": {

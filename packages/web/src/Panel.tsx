@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
-import { ENTRY_LABEL, inlineCode, isChanged, type FnNode, type Group, type Index, type Layer, type Selection } from './data.ts';
-import { EntryBadge, RiskBar, StatusBadge } from './nodes.tsx';
+import { displayName, ENTRY_LABEL, inlineCode, isChanged, type FnNode, type Group, type Index, type Layer, type Selection } from './data.ts';
+import { EntryBadge, RiskBar, SinceBadge, StatusBadge } from './nodes.tsx';
 import { DiffBlock } from './DiffView.tsx';
 
 interface Props {
@@ -38,27 +38,164 @@ function Section({ title, count, defaultOpen = true, children }: { title: string
 
 export function Panel(props: Props) {
   const { ix, selection } = props;
-  if (!selection) return <OverviewPanel {...props} />;
+  if (!selection) return ix.explore ? <ExplorePanel {...props} /> : <OverviewPanel {...props} />;
   if (selection.kind === 'group') return <GroupPanel {...props} group={ix.groups.get(selection.id)!} />;
   if (selection.kind === 'sink') return <SinkPanel {...props} id={selection.id} />;
   if (selection.kind === 'invariant') return <InvariantPanel {...props} fnId={selection.fnId} index={selection.index} />;
   const fn = ix.fns.get(selection.id);
-  return fn ? <FnPanel {...props} fn={fn} /> : <OverviewPanel {...props} />;
+  return fn ? <FnPanel {...props} fn={fn} /> : ix.explore ? <ExplorePanel {...props} /> : <OverviewPanel {...props} />;
 }
 
 function FnLink({ fn, onSelect, note }: { fn: FnNode; onSelect: Props['onSelect']; note?: string }) {
   return (
     <button className="fn-link" onClick={() => onSelect({ kind: 'fn', id: fn.id })} title={fn.purpose?.what}>
       <span className="fn-link-text">
-        <span className="mono">{fn.qualifiedName}</span>
+        <span className="mono">{displayName(fn)}</span>
         {fn.purpose && <span className="fn-link-purpose">{fn.purpose.what}</span>}
       </span>
       <span className="fn-link-meta">
         {note && <span className="badge badge-quiet">{note}</span>}
+        <SinceBadge fn={fn} />
         <EntryBadge fn={fn} />
         {isChanged(fn) && <StatusBadge status={fn.status} />}
       </span>
     </button>
+  );
+}
+
+const ago = (iso: string) => {
+  const s = (Date.now() - Date.parse(iso)) / 1000;
+  if (s < 90) return 'just now';
+  if (s < 5400) return `${Math.round(s / 60)} min ago`;
+  if (s < 129600) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} days ago`;
+};
+
+/** Explore mode with nothing selected: how the package is laid out and where to start reading. */
+function ExplorePanel({ ix, onSelect, onFocus }: Props) {
+  const { graph } = ix;
+  const ex = graph.explore;
+  const inside = (g: Group) => g.fnIds.some((id) => !ix.fns.get(id)?.outside);
+  const systems = graph.groups.filter((g) => g.kind === 'system' && inside(g));
+  const testShare = (g: Group) => g.fnIds.filter((id) => ix.fns.get(id)?.entry?.kind === 'test').length / Math.max(1, g.fnIds.length);
+  const parts = (systems.length > 1 ? systems : graph.groups.filter((g) => g.kind === 'module' && inside(g))).sort(
+    (a, b) => Number(testShare(a) > 0.5) - Number(testShare(b) > 0.5) || b.fnIds.length - a.fnIds.length,
+  );
+  const entries = (ex?.entries ?? []).map((id) => ix.fns.get(id)!).filter(Boolean);
+  const byKind = new Map<string, FnNode[]>();
+  for (const f of entries) (byKind.get(f.entry!.kind) ?? byKind.set(f.entry!.kind, []).get(f.entry!.kind)!).push(f);
+  const fresh = graph.nodes.filter((n) => n.since);
+  const name = graph.meta.scope || graph.meta.repo.split('/').pop();
+  return (
+    <div className="panel-inner">
+      <div className="panel-kicker">Explore</div>
+      <h2 className="panel-title mono">{name}</h2>
+      <div className="panel-badges">
+        <span className="badge badge-quiet">{graph.meta.stats.functions} functions</span>
+        <span className="badge badge-quiet">{graph.meta.stats.filesParsed} files parsed</span>
+        {ex?.snapshot.commit && (
+          <span className="badge badge-quiet mono" title={ex.snapshot.commit}>
+            {ex.snapshot.commit.slice(0, 7)}
+            {ex.snapshot.dirty ? '+' : ''}
+          </span>
+        )}
+      </div>
+      {ex?.since && (
+        <div className={`since-box ${ex.since.identical ? 'quiet' : ''}`}>
+          <div className="since-head">
+            Since your last look {ex.since.commit ? <span className="mono">({ex.since.commit.slice(0, 7)})</span> : null} · {ago(ex.since.at)}
+          </div>
+          {ex.since.identical ? (
+            <div>Nothing changed in this package.</div>
+          ) : (
+            <div className="since-counts">
+              <span className="chip chip-new">{ex.since.added} new</span>
+              <span className="chip chip-changed">{ex.since.changed} changed</span>
+              <span className="chip">{ex.since.removed} removed</span>
+            </div>
+          )}
+        </div>
+      )}
+      {parts.length > 0 && (
+        <Section title={systems.length > 1 ? 'Systems' : 'Modules'} count={parts.length}>
+          {parts.map((g) => (
+            <button key={g.id} className="fn-link" onClick={() => onSelect({ kind: 'group', id: g.id })}>
+              <span className="fn-link-text">
+                <span className="mono">{g.label}</span>
+                {g.summary && <span className="fn-link-purpose">{g.summary}</span>}
+              </span>
+              <span className="badge badge-quiet">{g.fnIds.length}</span>
+            </button>
+          ))}
+        </Section>
+      )}
+      {fresh.length > 0 && (
+        <Section title="New or changed since last look" count={fresh.length} defaultOpen={fresh.length <= 12}>
+          {fresh.slice(0, 60).map((f) => (
+            <FnLink key={f.id} fn={f} onSelect={onSelect} />
+          ))}
+        </Section>
+      )}
+      <Section title="Start reading here" count={ix.tour.length}>
+        <p className="muted small">Ways into the code. ← / → steps through them on the map.</p>
+        {[...byKind]
+          .filter(([k]) => k !== 'test' || byKind.size === 1)
+          .map(([kind, fns]) => (
+            <div key={kind} className="entry-group">
+              <div className="entry-group-label">
+                {ENTRY_LABEL[kind]} <span className="count">{fns.length}</span>
+              </div>
+              {fns.slice(0, 12).map((f) => (
+                <button key={f.id} className="fn-link" onClick={() => onFocus(f.id)} title="Center the map here">
+                  <span className="fn-link-text">
+                    <span className="mono">{f.qualifiedName === '(top level)' ? f.file : displayName(f)}</span>
+                    {f.purpose && <span className="fn-link-purpose">{f.purpose.what}</span>}
+                  </span>
+                </button>
+              ))}
+              {fns.length > 12 && <span className="muted small">+{fns.length - 12} more (use search)</span>}
+            </div>
+          ))}
+      </Section>
+      {(ex?.hotspots.length ?? 0) > 0 && (
+        <Section title="Hotspots" count={ex!.hotspots.length}>
+          <p className="muted small">The functions that hold it together: most called, most connected across modules.</p>
+          {ex!.hotspots.slice(0, 15).map((h) => {
+            const f = ix.fns.get(h.id);
+            if (!f) return null;
+            return (
+              <button key={h.id} className="fn-link" onClick={() => onFocus(f.id)} title="Center the map here">
+                <span className="fn-link-text">
+                  <span className="mono">{displayName(f)}</span>
+                  {f.purpose && <span className="fn-link-purpose">{f.purpose.what}</span>}
+                </span>
+                <span className="fn-link-meta">
+                  <span className="badge badge-quiet" title="callers / callees">
+                    {h.fanIn}↘ {h.fanOut}↗
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </Section>
+      )}
+      {graph.sinks.length > 0 && (
+        <Section title="Talks to" count={graph.sinks.length} defaultOpen={false}>
+          {graph.sinks.map((sk) => (
+            <button key={sk.id} className="fn-link" onClick={() => onSelect({ kind: 'sink', id: sk.id })}>
+              <span className="fn-link-text">
+                <span>{sk.label}</span>
+                <span className="fn-link-purpose mono">{sk.examples.slice(0, 3).join(' · ')}</span>
+              </span>
+            </button>
+          ))}
+        </Section>
+      )}
+      <p className="hint">
+        <kbd>/</kbd> search · <kbd>o</kbd> overview · double-click a group to open it, a function to center on it · <kbd>−</kbd>/<kbd>+</kbd> zoom out/in ·{' '}
+        <kbd>←</kbd>/<kbd>→</kbd> entry points
+      </p>
+    </div>
   );
 }
 
@@ -139,9 +276,10 @@ function FnPanel({ ix, fn, focus, onSelect, onFocus, onLayer }: Props & { fn: Fn
           </>
         )}
       </div>
-      <h2 className="panel-title mono">{fn.qualifiedName}</h2>
+      <h2 className="panel-title mono">{displayName(fn)}</h2>
       <div className="panel-badges">
-        <StatusBadge status={fn.status} />
+        {!ix.explore && <StatusBadge status={fn.status} />}
+        <SinceBadge fn={fn} />
         <EntryBadge fn={fn} />
         {fn.exported && <span className="badge badge-quiet">exported</span>}
         {e?.contract.breaking && <span className="badge status-deleted">breaking</span>}
@@ -192,7 +330,15 @@ function FnPanel({ ix, fn, focus, onSelect, onFocus, onLayer }: Props & { fn: Fn
           </Section>
         </>
       )}
-      {!e && (
+      {!e && ix.explore && (
+        <p className="muted small">
+          {fn.outside ? 'Outside the explored package · ' : ''}
+          {callers.length} caller{callers.length === 1 ? '' : 's'} · {callees.length} callee{callees.length === 1 ? '' : 's'}
+          {ix.hotspots.get(fn.id) ? ` · reached from ${ix.hotspots.get(fn.id)!.reach} functions` : ''}
+          {fn.since ? ` · ${fn.since} since your last look` : ''}
+        </p>
+      )}
+      {!e && !ix.explore && (
         <p className="muted small">
           {fn.depth ? `Unchanged · ${fn.depth} hop${fn.depth > 1 ? 's' : ''} upstream of a change.` : fn.downDepth ? `Unchanged · ${fn.downDepth} hop${fn.downDepth > 1 ? 's' : ''} downstream of a change.` : 'Unchanged.'}
         </p>
@@ -245,6 +391,8 @@ function GroupPanel({ ix, group: g, expandedGroups, onSelect, onFocus, onToggleG
   const changed = fns.filter(isChanged);
   const risk = ix.groupRisk.get(g.id) ?? 0;
   const entries = fns.filter((f) => f.entry);
+  const degree = (f: FnNode) => (ix.callers.get(f.id)?.length ?? 0) + (ix.callees.get(f.id)?.length ?? 0);
+  const start = changed[0] ?? entries.find((f) => f.entry!.kind !== 'test') ?? [...fns].sort((a, b) => degree(b) - degree(a))[0];
   return (
     <div className="panel-inner" key={g.id}>
       <div className="panel-kicker">
@@ -272,9 +420,9 @@ function GroupPanel({ ix, group: g, expandedGroups, onSelect, onFocus, onToggleG
             {expandedGroups.has(g.id) ? 'Collapse in map' : 'Open in map'}
           </button>
         ) : null}
-        {changed[0] && (
-          <button className="btn btn-primary" onClick={() => onFocus(changed[0].id)}>
-            ◎ Center on {changed[0].name}
+        {start && (
+          <button className="btn btn-primary" onClick={() => onFocus(start.id)}>
+            ◎ Center on {start.name === '(top level)' ? start.file.split('/').pop() : start.name}
           </button>
         )}
       </div>

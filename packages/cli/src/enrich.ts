@@ -1,3 +1,4 @@
+import type { Store } from './store.ts';
 import type {
   CodeGraph,
   ContractChange,
@@ -7,7 +8,7 @@ import type {
   NodeEnrichment,
   Signature,
 } from './types.ts';
-import { defaultCachePath, describeGraph, heuristicDescriber, type Describer } from './purpose.ts';
+import { describeGraph, heuristicDescriber, type Describer } from './purpose.ts';
 
 /** Context handed to an enrichment provider for a single changed function. */
 export interface NodeContext {
@@ -29,7 +30,7 @@ export interface EnrichmentProvider extends Describer {
 export async function enrich(
   graph: CodeGraph,
   provider: EnrichmentProvider,
-  opts: { concurrency?: number; log?: (msg: string) => void; purposes?: boolean; cachePath?: string } = {},
+  opts: { concurrency?: number; log?: (msg: string) => void; purposes?: boolean; store?: Store } = {},
 ): Promise<CodeGraph> {
   const log = opts.log ?? (() => {});
   if ((graph.version as number) !== 2) throw new Error(`graph version ${graph.version} is outdated; re-run \`codelens inspect\``);
@@ -83,7 +84,7 @@ export async function enrich(
   if (opts.purposes !== false) {
     log('Describing what each function does and why…');
     await describeGraph(graph, provider, heuristicProvider, {
-      cachePath: opts.cachePath ?? defaultCachePath(graph.meta.repo),
+      store: opts.store,
       concurrency: opts.concurrency ?? 4,
       log,
     });

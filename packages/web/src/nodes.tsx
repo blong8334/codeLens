@@ -1,5 +1,5 @@
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
-import { ENTRY_LABEL, isChanged, riskLevel, type FnNode, type Index, type Invariant } from './data.ts';
+import { displayName, ENTRY_LABEL, isChanged, riskLevel, type FnNode, type Index, type Invariant } from './data.ts';
 import type { MapItem } from './impact.ts';
 
 export function RiskBar({ value, label = true }: { value: number; label?: boolean }) {
@@ -15,6 +15,15 @@ export function RiskBar({ value, label = true }: { value: number; label?: boolea
 
 export function StatusBadge({ status }: { status: FnNode['status'] }) {
   return <span className={`badge status-${status}`}>{status}</span>;
+}
+
+export function SinceBadge({ fn }: { fn: FnNode }) {
+  if (!fn.since) return null;
+  return (
+    <span className={`badge since-${fn.since}`} title={`${fn.since === 'new' ? 'Added' : 'Changed'} since your last explore`}>
+      {fn.since}
+    </span>
+  );
 }
 
 export function EntryBadge({ fn }: { fn: FnNode }) {
@@ -49,10 +58,11 @@ export function FocusCard({ data }: NodeProps<MapNode>) {
     <div className={`card focus-card ${riskEdge(fn)} ${data.selected ? 'is-selected' : ''}`}>
       {handles}
       <div className="fn-head">
-        <span className="card-title mono">{fn.qualifiedName}</span>
+        <span className="card-title mono">{displayName(fn)}</span>
         <span className="fn-head-badges">
+          <SinceBadge fn={fn} />
           <EntryBadge fn={fn} />
-          <StatusBadge status={fn.status} />
+          {(isChanged(fn) || !data.ix.explore) && <StatusBadge status={fn.status} />}
         </span>
       </div>
       <div className="card-path">
@@ -86,9 +96,10 @@ export function FnCard({ data }: NodeProps<Node<{ item?: MapItem; fn?: FnNode; s
       {handles}
       <div className="fn-head">
         <span className="card-title mono" title={fn.qualifiedName}>
-          {fn.qualifiedName}
+          {displayName(fn)}
         </span>
         <span className="fn-head-badges">
+          <SinceBadge fn={fn} />
           <EntryBadge fn={fn} />
           {isChanged(fn) && <StatusBadge status={fn.status} />}
         </span>
@@ -112,16 +123,17 @@ function EffectsLine({ fn }: { fn: FnNode }) {
 
 // ---- a file / module / system standing in for several functions ----
 
-export function GroupCard({ data }: NodeProps<MapNode>) {
-  const { item, ix, selected, expanded } = data;
+export function GroupCard({ data }: NodeProps<Node<MapData & { dimmed?: boolean }>>) {
+  const { item, ix, selected, expanded, dimmed } = data;
   const g = item.group!;
   const fns = item.fnIds.map((id) => ix.fns.get(id)!);
   const changed = fns.filter(isChanged).length;
   const entries = fns.filter((f) => f.entry && f.entry.kind !== 'test').length;
   const tests = fns.filter((f) => f.entry?.kind === 'test').length;
   const risk = Math.max(0, ...fns.map((f) => f.enrichment?.blastRadius ?? 0));
+  const fresh = fns.filter((f) => f.since).length;
   return (
-    <div className={`card group-card group-${g.kind} ${changed ? `risk-edge-${riskLevel(risk)}` : ''} ${selected ? 'is-selected' : ''} ${expanded ? 'is-expanded' : ''}`}>
+    <div className={`card group-card group-${g.kind} ${changed ? `risk-edge-${riskLevel(risk)}` : ''} ${selected ? 'is-selected' : ''} ${expanded ? 'is-expanded' : ''} ${dimmed ? 'is-dimmed' : ''}`}>
       {handles}
       <div className="fn-head">
         <span className="card-title" title={g.path ?? g.label}>
@@ -134,6 +146,7 @@ export function GroupCard({ data }: NodeProps<MapNode>) {
           {fns.length} fn{fns.length > 1 ? 's' : ''}
         </span>
         {changed > 0 && <span className="chip chip-changed">{changed} changed</span>}
+        {fresh > 0 && <span className="chip chip-new" title="new or changed since your last explore">{fresh} new/changed</span>}
         {entries > 0 && <span className="chip chip-entry">{entries} entry</span>}
         {tests > 0 && <span className="chip">{tests} test{tests > 1 ? 's' : ''}</span>}
       </div>
@@ -142,15 +155,25 @@ export function GroupCard({ data }: NodeProps<MapNode>) {
   );
 }
 
+const PLURAL = { fn: 'functions', file: 'files', module: 'modules', system: 'systems' } as const;
+
 export function BundleCard({ data }: NodeProps<MapNode>) {
-  const hidden = data.item.hidden ?? [];
-  const names = hidden.map((h) => h.fn?.qualifiedName ?? h.group?.label ?? '').filter(Boolean);
+  const { item, selected } = data;
+  const hidden = item.hidden ?? [];
+  const names = hidden.map((h) => (h.fn ? displayName(h.fn) : (h.group?.label ?? ''))).filter(Boolean);
+  // Overview fold cards ("+N more files in src/lang") vs. capped impact-map columns.
+  const fold = item.id.startsWith('rest|');
+  const kinds = new Set(hidden.map((h) => (h.fn ? 'fn' : h.group!.kind)));
+  const noun = kinds.size === 1 ? PLURAL[[...kinds][0] as keyof typeof PLURAL] : 'parts';
   return (
-    <div className="card bundle-card">
+    <div className={`card bundle-card ${selected ? 'is-selected' : ''}`}>
       {handles}
-      <div className="card-title">+{hidden.length} more</div>
+      <div className="card-title">
+        +{hidden.length} more {fold ? noun : ''}
+      </div>
+      {fold && <div className="card-path">{item.group ? `in ${item.group.label}` : 'elsewhere'}</div>}
       <div className="card-path clamp-2">{names.slice(0, 6).join(', ')}</div>
-      <div className="bundle-hint">click to expand column</div>
+      <div className="bundle-hint">{fold ? 'double-click to show them' : 'click to expand column'}</div>
     </div>
   );
 }

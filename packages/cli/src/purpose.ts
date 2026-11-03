@@ -1,7 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import type { Store } from './store.ts';
 import type { CodeGraph, FnNode, Group, Purpose } from './types.ts';
 
 export interface PurposeInput {
@@ -24,30 +22,22 @@ export interface Describer {
   describeGroups(items: GroupInput[]): Promise<Map<string, string>>;
 }
 
-interface Cache {
-  fns: Record<string, { what: string; why: string }>;
-  groups: Record<string, string>;
-}
 
 const FN_BATCH = 10;
 const GROUP_BATCH = 12;
 
-export function defaultCachePath(repo: string): string {
-  const id = createHash('sha1').update(repo).digest('hex').slice(0, 16);
-  return join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'codelens', `${id}.json`);
-}
-
 /**
  * Give every function a "what / why" purpose and every group a one-line summary.
- * Results are cached by content hash, so re-runs only pay for new or edited code.
+ * Results are stored by content hash (and model), so re-runs only pay for new or edited code.
  */
 export async function describeGraph(
   graph: CodeGraph,
   describer: Describer,
   fallback: Describer,
-  opts: { cachePath: string; concurrency: number; log: (m: string) => void },
-) {
-  const cache = await loadCache(opts.cachePath);
+  opts: { store?: Store; concurrency: number; log: (m: string) => void },
+): Promise<{ described: number; cached: number }> {
+  const cache = new DescriptionCache(opts.store);
+  let described = 0;
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   const callers = new Map<string, string[]>();
   const callees = new Map<string, string[]>();
@@ -60,7 +50,7 @@ export async function describeGraph(
   const fnKey = (n: FnNode) => hash(describer.name, 'fn', n.file, n.qualifiedName, n.source);
   const pending: FnNode[] = [];
   for (const n of graph.nodes) {
-    const hit = cache.fns[fnKey(n)];
+    const hit = cache.get<{ what: string; why: string }>(fnKey(n));
     if (hit) n.purpose = { ...hit, source: sourceOf(describer) };
     else pending.push(n);
   }
@@ -92,7 +82,10 @@ export async function describeGraph(
       }
       item.node.purpose = { ...p, source: sourceOf(src, item.node) };
       // Heuristic text depends on callers, not just source, so only model output is cached.
-      if (src === describer && describer.name !== 'heuristic') cache.fns[fnKey(item.node)] = p;
+      if (src === describer && describer.name !== 'heuristic') {
+        cache.set(fnKey(item.node), 'fn', p);
+        described++;
+      }
     }
   });
 
@@ -114,7 +107,8 @@ export async function describeGraph(
         continue;
       }
       const key = hash(describer.name, 'group', kind, group.label, ...children.map((c) => `${c.label}:${c.summary}`));
-      if (cache.groups[key]) group.summary = cache.groups[key];
+      const hit = cache.get<string>(key);
+      if (hit) group.summary = hit;
       else inputs.push({ group, children: children.slice(0, 20), key });
     }
     const batches = chunk(inputs, GROUP_BATCH);
@@ -133,11 +127,11 @@ export async function describeGraph(
       batch.forEach((b, i) => {
         const summary = out.get(items[i].key);
         b.group.summary = summary ?? b.children.map((c) => c.label).slice(0, 3).join(', ');
-        if (summary && !fromFallback && describer.name !== 'heuristic') cache.groups[b.key] = summary;
+        if (summary && !fromFallback && describer.name !== 'heuristic') cache.set(b.key, 'group', summary);
       });
     });
   }
-  await saveCache(opts.cachePath, cache);
+  return { described, cached: graph.nodes.length - pending.length };
 }
 
 function sourceOf(d: Describer, node?: FnNode): Purpose['source'] {
@@ -207,16 +201,15 @@ async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<v
   }));
 }
 
-async function loadCache(path: string): Promise<Cache> {
-  try {
-    const c = JSON.parse(await readFile(path, 'utf8'));
-    return { fns: c.fns ?? {}, groups: c.groups ?? {} };
-  } catch {
-    return { fns: {}, groups: {} };
+/** Store-backed when a store is given; otherwise remembers only for this run. */
+class DescriptionCache {
+  private memory = new Map<string, unknown>();
+  constructor(private store?: Store) {}
+  get<T>(key: string): T | undefined {
+    return (this.memory.get(key) as T | undefined) ?? this.store?.getDescription<T>(key);
   }
-}
-
-async function saveCache(path: string, cache: Cache) {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(cache));
+  set(key: string, kind: 'fn' | 'group', value: unknown) {
+    this.memory.set(key, value);
+    this.store?.putDescription(key, kind, value);
+  }
 }

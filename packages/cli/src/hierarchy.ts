@@ -1,13 +1,21 @@
 import { basename, dirname } from 'node:path/posix';
 import { firstMatch, matches, type CodeLensConfig } from './config.ts';
+import { specForId, specForPath } from './lang/index.ts';
 import type { ExtractedCall, ExtractedFn } from './parse.ts';
+import { TOP_LEVEL } from './lang/engine.ts';
 import type { EntryKind, FnNode, Group, Sink, SinkCategory } from './types.ts';
 
 // ---------------- Grouping: file → module → system ----------------
 
 /** Directory names that organize code without naming a subsystem. */
-const GENERIC_DIRS = new Set(['src', 'lib', 'libs', 'app', 'apps', 'packages', 'source', 'internal', 'pkg', 'modules', 'code', 'main', 'java', 'python']);
-const MANIFESTS = /(^|\/)(package\.json|pyproject\.toml|setup\.py|go\.mod|Cargo\.toml)$/;
+const GENERIC_DIRS = new Set([
+  'src', 'lib', 'libs', 'app', 'apps', 'packages', 'source', 'sources', 'internal', 'pkg', 'modules', 'code', 'main',
+  'java', 'kotlin', 'scala', 'python', 'go', 'cmd', 'include', 'Sources', 'csharp', 'ruby', 'php',
+]);
+/** Reverse-DNS package roots (`com/acme/...`): skip both the TLD and the organization. */
+const REVERSE_DNS = new Set(['com', 'org', 'net', 'io', 'dev', 'co', 'edu', 'gov', 'uk', 'de']);
+const MANIFESTS =
+  /(^|\/)(package\.json|pyproject\.toml|setup\.py|go\.mod|Cargo\.toml|pom\.xml|build\.gradle(\.kts)?|[^/]+\.csproj|Gemfile|composer\.json|Package\.swift|build\.sbt|mix\.exs|pubspec\.yaml)$/;
 
 export interface PackageInfo {
   dir: string;
@@ -46,7 +54,16 @@ export class Grouper {
     const pkg = this.packageFor(path);
     if (pkg) return { name: pkg.name, auto: true };
     const segments = dirname(path).split('/').filter((s) => s && s !== '.');
-    const meaningful = segments.find((s) => !GENERIC_DIRS.has(s));
+    let meaningful: string | undefined;
+    for (let i = 0; i < segments.length; i++) {
+      if (GENERIC_DIRS.has(segments[i]) || segments[i] === 'test' || segments[i] === 'tests') continue;
+      if (REVERSE_DNS.has(segments[i])) {
+        i++; // skip the organization too
+        continue;
+      }
+      meaningful = segments[i];
+      break;
+    }
     return { name: meaningful ?? segments.at(-1) ?? '(root)', auto: true };
   }
 
@@ -55,7 +72,10 @@ export class Grouper {
     if (configured) return { name: configured, auto: false };
     const pkg = this.packageFor(path);
     const dir = dirname(path);
-    const rel = pkg ? dir.slice(pkg.dir.length + 1) || '.' : dir;
+    let rel = pkg ? dir.slice(pkg.dir.length + 1) || '.' : dir;
+    // Tests, fixtures and test data form one module per test root, not one per folder.
+    const t = rel.match(/^(.*?(?:^|\/)(?:__tests__|tests?|spec))(\/|$)/);
+    if (t) rel = t[1];
     return { name: rel === '.' ? '(root)' : rel, auto: true };
   }
 
@@ -93,28 +113,46 @@ export class Grouper {
 
 // ---------------- Entry points ----------------
 
-const TEST_FILE = /(\.|_)(test|spec)\.[cm]?[jt]sx?$|(^|\/)(__tests__|tests?)\/|(^|\/)test_[^/]*\.py$|_test\.py$/;
+/** Generic test-directory conventions; each language adds its own file patterns. */
+const TEST_DIR = /(^|\/)(__tests__|tests?|spec)\//;
 const ROUTE_DIR = /(^|\/)(routes?|api|handlers?|controllers?|endpoints?|views|pages)\//;
-const ROUTE_DECORATOR = /@\w*\.?(route|get|post|put|patch|delete|api_view|websocket)\b/i;
-const CLI_DECORATOR = /@\w*\.?(command|group|cli)\b/i;
-const JOB_DECORATOR = /@\w*\.?(task|shared_task|cron|schedule|scheduled_job|periodic_task)\b/i;
+/** Route / handler annotations across ecosystems: Python, Spring, JAX-RS, ASP.NET, Rust web frameworks, NestJS. */
+const ROUTE_DECORATOR =
+  /@\w*\.?(route|get|post|put|patch|delete|api_view|websocket)\b|@(Get|Post|Put|Delete|Patch|Request)Mapping\b|@(GET|POST|PUT|DELETE|PATCH|Path)\b|\[(Http(Get|Post|Put|Delete|Patch)|Route)\b|#\[(actix_web::)?(get|post|put|delete|patch|route)\b/i;
+const TEST_DECORATOR = /@(Test|ParameterizedTest|RepeatedTest)\b|\[(Test|Fact|Theory|TestMethod|TestCase)\b|#\[(tokio::)?test\b|@pytest\./;
+const CLI_DECORATOR = /@\w*\.?(command|group|cli)\b|@Command\b/i;
+const JOB_DECORATOR = /@\w*\.?(task|shared_task|cron|schedule|scheduled_job|periodic_task)\b|@Scheduled\b|@SqsListener\b|@KafkaListener\b|\[FunctionName\b/i;
+
+/** Files that are run rather than imported: CLIs, servers, scripts. */
+const SCRIPT_FILE = /(^|\/)(bin|scripts?|cmd|tools?)\/|(^|\/)(main|cli|server|app|manage|__main__|run)\.[^/]+$|\.(sh|bash)$/;
+
+export function isTestFile(path: string): boolean {
+  return TEST_DIR.test(path) || !!specForPath(path)?.testFile?.test(path);
+}
 
 export function detectEntry(
-  fn: Pick<FnNode, 'file' | 'qualifiedName' | 'name' | 'exported'>,
+  fn: Pick<FnNode, 'file' | 'qualifiedName' | 'name' | 'exported' | 'signature' | 'kind' | 'source'>,
   decorators: string[],
   callerCount: number,
   config: CodeLensConfig,
 ): FnNode['entry'] {
   const e = (kind: EntryKind, reason: string) => ({ kind, reason });
   if (config.entryPoints?.some((p) => matches(p, fn.file, fn.qualifiedName))) return e('config', 'listed in .codelens.json');
-  if (TEST_FILE.test(fn.file)) return e('test', 'test file');
   const deco = decorators.join(' ');
+  if (isTestFile(fn.file) || TEST_DECORATOR.test(deco)) return e('test', TEST_DECORATOR.test(deco) ? `annotated ${decorators[0]}` : 'test file');
+  const hinted = specForPath(fn.file)?.hooks?.entry?.({ name: fn.name, params: fn.signature.params, decorators, file: fn.file });
+  if (hinted) return hinted;
   if (ROUTE_DECORATOR.test(deco)) return e('route', `decorated ${decorators[0]}`);
   if (CLI_DECORATOR.test(deco)) return e('cli', `decorated ${decorators[0]}`);
   if (JOB_DECORATOR.test(deco)) return e('job', `decorated ${decorators[0]}`);
+  if (fn.name === TOP_LEVEL) {
+    // Top-level code runs on import; it is an entry only in files meant to be run.
+    if (SCRIPT_FILE.test(fn.file) || /__name__\s*==\s*['"]__main__['"]/.test(fn.source)) return e('main', 'top-level code of a script');
+    return undefined;
+  }
   if (callerCount > 0) return undefined;
-  if (fn.name === 'main' || fn.name === '__main__') return e('main', 'program entry');
-  if (/(^|\/)(bin|cli|commands?)\//.test(fn.file)) return e('cli', 'lives in a CLI directory');
+  if (fn.name === 'main' || fn.name === 'Main' || fn.name === '__main__') return e('main', 'program entry');
+  if (/(^|\/)(bin|cmd|commands?)\//.test(fn.file) && fn.kind !== 'method') return e('cli', 'lives in a CLI directory');
   if (/(^|\/)(jobs?|workers?|cron|tasks?)\//.test(fn.file)) return e('job', 'uncalled function in a job/worker directory');
   if ((ROUTE_DIR.test(fn.file) || /^handle[A-Z_]|Handler$|^on[A-Z]/.test(fn.name)) && fn.exported) return e('route', 'exported handler');
   if (fn.exported) return e('public-api', 'exported and not called inside the repo');
@@ -123,53 +161,27 @@ export function detectEntry(
 
 // ---------------- Sinks (external effects) ----------------
 
-interface SinkRule {
-  category: SinkCategory;
-  label: string;
-  packages: RegExp;
-  idents: RegExp;
-}
-
-const SINK_RULES: SinkRule[] = [
-  {
-    category: 'database',
-    label: 'Database',
-    packages: /^(pg|postgres|mysql2?|sqlite3?|better-sqlite3|mongodb|mongoose|@prisma\/client|prisma|knex|typeorm|sequelize|drizzle-orm|kysely|sqlalchemy|psycopg2?|pymongo|asyncpg|peewee|django\.db)$/,
-    idents: /^(db|database|prisma|knex|pool|sql|orm|mongo|collection|cursor|conn|connection)$/i,
-  },
-  { category: 'cache', label: 'Cache', packages: /^(redis|ioredis|memcached|node-cache|keyv|@upstash\/redis)$/, idents: /^(redis|cache|memcache)$/i },
-  {
-    category: 'network',
-    label: 'Network / HTTP',
-    packages: /^(axios|node-fetch|got|undici|ky|superagent|requests|httpx|aiohttp|urllib3?|https?|node:https?|@grpc\/.*|grpc|stripe|twilio|@sendgrid\/.*|openai|@anthropic-ai\/sdk)$/,
-    idents: /^(fetch|axios|http|https|gateway|httpClient|requests|httpx|stripe|webhook|apiClient)$/i,
-  },
-  {
-    category: 'storage',
-    label: 'Object storage',
-    packages: /^(@aws-sdk\/client-s3|@google-cloud\/storage|@azure\/storage-blob|boto3|minio)$/,
-    idents: /^(s3|bucket|storage|blob)$/i,
-  },
-  {
-    category: 'queue',
-    label: 'Queue / events',
-    packages: /^(kafkajs|amqplib|bullmq?|@aws-sdk\/client-sqs|@aws-sdk\/client-sns|@google-cloud\/pubsub|celery|kombu|pika|nats)$/,
-    idents: /^(queue|producer|publisher|kafka|sqs|sns|pubsub|eventBus)$/i,
-  },
-  {
-    category: 'filesystem',
-    label: 'Filesystem',
-    packages: /^(node:)?(fs|fs\/promises)$|^(fs-extra|shutil|pathlib|aiofiles)$/,
-    idents: /^(fs|open|shutil|aiofiles)$/,
-  },
-  { category: 'process', label: 'Subprocess', packages: /^(node:)?child_process$|^(execa|subprocess)$/, idents: /^(subprocess|execa)$/ },
+/** Receiver / callee names that signal an effect in any language (when not bound to a known import). */
+const SINK_IDENTS: { category: SinkCategory; label: string; idents: RegExp }[] = [
+  { category: 'database', label: 'Database', idents: /^(db|database|prisma|knex|pool|sql|orm|mongo|collection|cursor|conn|connection|jdbcTemplate|entityManager|dbContext|pdo)$/i },
+  { category: 'cache', label: 'Cache', idents: /^(redis|cache|memcache)$/i },
+  { category: 'network', label: 'Network / HTTP', idents: /^(fetch|axios|http|https|gateway|httpClient|requests|httpx|stripe|webhook|apiClient|restTemplate|webClient|reqwest)$/i },
+  { category: 'storage', label: 'Object storage', idents: /^(s3|s3Client|bucket|storage|blob)$/i },
+  { category: 'queue', label: 'Queue / events', idents: /^(queue|producer|publisher|kafka|kafkaTemplate|sqs|sns|pubsub|eventBus)$/i },
+  { category: 'filesystem', label: 'Filesystem', idents: /^(fs|open|shutil|aiofiles|os\.WriteFile|ioutil)$/ },
+  { category: 'process', label: 'Subprocess', idents: /^(subprocess|execa|exec)$/ },
 ];
 
-/** Leftmost identifier of a receiver: `this.db.pool` → `db`, `fs.promises` → `fs`. */
+const IN_MEMORY_OPS =
+  /^(push|pop|shift|unshift|slice|splice|map|filter|forEach|reduce|includes|indexOf|join|concat|sort|reverse|find|some|every|at|length|size|isEmpty|peek|poll|offer|append|appendleft|popleft|extend|goto\w*|current\w*|next|prev|reset|toString)$/;
+
+const SINK_LABELS: Record<string, string> = Object.fromEntries(SINK_IDENTS.map((s) => [s.category, s.label]));
+
+/** Leftmost identifier of a receiver: `this.db.pool` → `db`, `$this->repo` → `repo`, `std::fs` → `std`. */
 function rootIdent(call: ExtractedCall): string {
   if (!call.member || !call.object) return call.name;
-  const obj = call.object.replace(/^(await\s+)?(this|self)\./, '');
-  return obj.split(/[.([\s]/)[0];
+  const obj = call.object.replace(/^(await\s+)?(this|self|\$this|@)(\.|->|::)?/, '').replace(/^[$@]+/, '');
+  return obj.split(/::|->|[.([\s]/)[0];
 }
 
 export class SinkClassifier {
@@ -178,19 +190,33 @@ export class SinkClassifier {
   constructor(private config: CodeLensConfig) {}
 
   /** Classify a call that did not resolve to a function in the repo. */
-  classify(call: ExtractedCall, importNames: Record<string, string>): string | undefined {
+  classify(call: ExtractedCall, file: { language: string; importNames: Record<string, string> }): string | undefined {
     // `a.b().c()`: the inner call is classified on its own; skip the chained one.
     if (call.object?.includes('(')) return undefined;
     const root = rootIdent(call);
     if (!root || root === 'this' || root === 'self') return undefined;
-    const spec = importNames[root];
+    const spec = file.importNames[root] ?? (call.object && /::|\\/.test(call.object) ? call.object : undefined);
     const pkg = spec && !spec.startsWith('.') && !spec.startsWith('/') ? spec : undefined;
 
     for (const [category, names] of Object.entries(this.config.sinks ?? {})) {
-      if (names.includes(root) || (pkg && names.includes(pkg))) return this.record(category, capitalize(category), call);
+      if (names.includes(root) || (pkg && names.some((n) => pkg === n || pkg.startsWith(`${n}.`) || pkg.startsWith(`${n}/`) || pkg.startsWith(`${n}::`)))) {
+        return this.record(category, SINK_LABELS[category] ?? capitalize(category), call);
+      }
     }
-    for (const rule of SINK_RULES) {
-      if ((pkg && rule.packages.test(pkg)) || (!spec && rule.idents.test(root))) return this.record(rule.category, rule.label, call);
+    const lang = specForId(file.language);
+    if (pkg) {
+      for (const [category, re] of Object.entries(lang?.sinks ?? {})) {
+        if (re && (re.test(pkg) || re.test(`${pkg}.${call.name}`))) return this.record(category, SINK_LABELS[category] ?? capitalize(category), call);
+      }
+    }
+    const written = call.object ? `${call.object}.${call.name}` : call.name;
+    for (const [category, re] of Object.entries(lang?.sinkCalls ?? {})) {
+      if (re && re.test(written)) return this.record(category, SINK_LABELS[category] ?? capitalize(category), call);
+    }
+    // Guessing from a variable's name alone: `queue.push()` on a local array or `cursor.gotoParent()`
+    // on a syntax-tree cursor is not I/O, so in-memory operations never count.
+    if (!spec && !(call.member && IN_MEMORY_OPS.test(call.name))) {
+      for (const rule of SINK_IDENTS) if (rule.idents.test(root)) return this.record(rule.category, rule.label, call);
     }
     return undefined;
   }

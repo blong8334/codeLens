@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Background, Controls, MiniMap, ReactFlow, type Node, type NodeMouseHandler } from '@xyflow/react';
-import { buildIndex, LAYERS, LODS, riskLevel, type CodeGraph, type Index, type Layer, type Lod, type Selection } from './data.ts';
+import { buildIndex, defaultOverviewLod, displayName, LAYERS, LODS, OVERVIEW, riskLevel, type CodeGraph, type Index, type Layer, type Lod, type Selection } from './data.ts';
 import { buildMap, type MapItem } from './impact.ts';
+import { buildOverview } from './overview.ts';
+import { Search, type SearchHit } from './Search.tsx';
 import { invariantLayer } from './layers.ts';
 import { nodeTypes } from './nodes.tsx';
 import { Panel } from './Panel.tsx';
@@ -78,18 +80,53 @@ function Loader({ error, onLoad }: { error: string | null; onLoad: (g: CodeGraph
   );
 }
 
+const BUDGETS = [25, 40, 80, 0] as const;
+const BUDGET_KEY = 'codelens.cardBudget';
+
+/** The viewer's card limit, remembered per browser. 0 = no limit. */
+function useBudget(): [number, (n: number) => void] {
+  const [budget, setBudget] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem(BUDGET_KEY));
+      return (BUDGETS as readonly number[]).includes(v) && localStorage.getItem(BUDGET_KEY) !== null ? v : 25;
+    } catch {
+      return 25;
+    }
+  });
+  const update = (n: number) => {
+    setBudget(n);
+    try {
+      localStorage.setItem(BUDGET_KEY, String(n));
+    } catch {
+      // Storage unavailable: the choice lasts for this page only.
+    }
+  };
+  return [budget, update];
+}
+
 function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
   const ix = useMemo(() => buildIndex(graph), [graph]);
 
   // Deep links: ?layer=1&fn=<node id>&lod=2
   const params = new URLSearchParams(location.search);
   const linked = params.get('fn');
-  const initialFocus = linked && ix.fns.has(linked) ? linked : (ix.reviewOrder[0] ?? graph.nodes[0]?.id);
+  const initialFocus = linked && ix.fns.has(linked) ? linked : ix.explore ? OVERVIEW : (ix.reviewOrder[0] ?? OVERVIEW);
+  const tour = ix.explore ? ix.tour : ix.reviewOrder;
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const [layer, setLayer] = useState<Layer>(() => (Number(params.get('layer')) || 1) as Layer);
   const [history, setHistory] = useState<string[]>([initialFocus]);
   const focus = history.at(-1)!;
-  const [lod, setLod] = useState<Lod>(() => (params.has('lod') ? (Number(params.get('lod')) as Lod) : 1));
+  const [focusLod, setFocusLod] = useState<Lod>(() => (params.has('lod') ? (Number(params.get('lod')) as Lod) : 1));
+  const [overviewLod, setOverviewLod] = useState<Lod>(() => (!linked && params.has('lod') ? (Math.max(1, Number(params.get('lod'))) as Lod) : defaultOverviewLod(graph)));
+  const inOverview = focus === OVERVIEW;
+  const lod = inOverview ? overviewLod : focusLod;
+  const setLod = inOverview ? setOverviewLod : setFocusLod;
+  const minLod: Lod = inOverview ? 1 : 0;
+  const hasTests = useMemo(() => graph.nodes.some((n) => n.entry?.kind === 'test'), [graph]);
+  const [showTests, setShowTests] = useState(() => !ix.explore);
+  const [budget, setBudget] = useBudget();
+  const [opened, setOpened] = useState<Set<string>>(new Set());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [expandedCols, setExpandedCols] = useState<Set<number>>(new Set());
   const [selection, setSelection] = useState<Selection>(linked ? { kind: 'fn', id: initialFocus } : null);
@@ -104,11 +141,34 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
     },
     [],
   );
-  const changeLod = useCallback((next: Lod) => {
-    setLod(next);
+  const showOverview = useCallback(() => {
+    setHistory((h) => (h.at(-1) === OVERVIEW ? h : [...h.slice(-11), OVERVIEW]));
     setExpandedGroups(new Set());
-    setExpandedCols(new Set());
+    setOpened(new Set());
+    setLayer(1);
   }, []);
+  const changeLod = useCallback(
+    (next: Lod) => {
+      setLod(Math.max(minLod, next) as Lod);
+      setExpandedGroups(new Set());
+      setOpened(new Set());
+      setExpandedCols(new Set());
+    },
+    [setLod, minLod],
+  );
+  const onSearch = useCallback(
+    (hit: SearchHit) => {
+      if (hit.kind === 'fn') return centerOn(hit.fn.id);
+      // Show a group at its own level in the overview, selected.
+      const level = ({ file: 1, module: 2, system: 3 } as const)[hit.group.kind];
+      setOverviewLod(level);
+      setHistory((h) => (h.at(-1) === OVERVIEW ? h : [...h.slice(-11), OVERVIEW]));
+      setExpandedGroups(new Set());
+      setSelection({ kind: 'group', id: hit.group.id });
+      setLayer(1);
+    },
+    [centerOn],
+  );
   const toggleGroup = useCallback((id: string) => {
     setExpandedGroups((s) => {
       const n = new Set(s);
@@ -119,12 +179,12 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
   }, []);
   const stepChange = useCallback(
     (delta: number) => {
-      const order = ix.reviewOrder;
-      if (!order.length) return;
-      const i = order.indexOf(focus);
-      centerOn(order[(i + delta + order.length) % order.length], 'replace');
+      if (!tour.length) return;
+      const i = tour.indexOf(focus);
+      const next = i < 0 && delta < 0 ? tour.length - 1 : (i + delta + tour.length) % tour.length;
+      centerOn(tour[next], i < 0 ? 'push' : 'replace');
     },
-    [ix, focus, centerOn],
+    [tour, focus, centerOn],
   );
   const openLayer = useCallback((l: Layer, fnId?: string) => {
     setLayer(l);
@@ -134,21 +194,27 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (['1', '2', '3'].includes(e.key)) setLayer(Number(e.key) as Layer);
+      if (e.key === '/') {
+        e.preventDefault();
+        searchRef.current?.focus();
+      } else if (e.key === 'o' || e.key === 'Home') showOverview();
+      else if (!ix.explore && ['1', '2', '3'].includes(e.key)) setLayer(Number(e.key) as Layer);
       else if (e.key === 'Escape') setSelection(null);
       else if (layer === 1 && (e.key === '-' || e.key === '_')) changeLod(Math.min(3, lod + 1) as Lod);
-      else if (layer === 1 && (e.key === '=' || e.key === '+')) changeLod(Math.max(0, lod - 1) as Lod);
+      else if (layer === 1 && (e.key === '=' || e.key === '+')) changeLod(Math.max(minLod, lod - 1) as Lod);
       else if (e.key === 'ArrowRight' || e.key === 'j') stepChange(1);
       else if (e.key === 'ArrowLeft' || e.key === 'k') stepChange(-1);
       else if (e.key === 'Backspace' && history.length > 1) setHistory((h) => h.slice(0, -1));
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [layer, lod, history, changeLod, stepChange]);
+  }, [layer, lod, minLod, history, changeLod, stepChange, showOverview, ix]);
 
   const { meta, enrichment } = graph;
   const risk = enrichment?.overallRisk ?? 0;
-  const changeIndex = ix.reviewOrder.indexOf(focus);
+  const changeIndex = tour.indexOf(focus);
+  const ex = graph.explore;
+  const stepNoun = ix.explore ? 'Entry point' : 'Change';
 
   return (
     <div className="app">
@@ -160,14 +226,34 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
           <span className="mono repo" title={meta.repo}>
             {meta.repo.split('/').pop()}
           </span>
-          <span className="mono rev">
-            {meta.base} → {meta.head === 'WORKING' ? 'working tree' : meta.head}
-          </span>
+          {ix.explore ? (
+            <span className="mono rev" title={ex?.snapshot.commit ?? undefined}>
+              {meta.scope ? `${meta.scope} · ` : ''}
+              {ex?.snapshot.commit ? ex.snapshot.commit.slice(0, 7) : 'no git'}
+              {ex?.snapshot.dirty ? ' + uncommitted' : ''}
+            </span>
+          ) : (
+            <span className="mono rev">
+              {meta.base} → {meta.head === 'WORKING' ? 'working tree' : meta.head}
+            </span>
+          )}
         </div>
+        <Search ref={searchRef} ix={ix} onPick={onSearch} />
         <div className="stats">
-          <Stat value={meta.stats.changedFunctions} label="changed" />
-          <Stat value={meta.stats.impactedFunctions} label="impacted callers" />
-          <Stat value={graph.groups.filter((g) => g.kind === 'system').length} label="systems" />
+          {ix.explore ? (
+            <>
+              <Stat value={meta.stats.functions} label="functions" />
+              <Stat value={ix.tour.length} label="entry points" />
+              <Stat value={graph.groups.filter((g) => g.kind === 'module' && g.fnIds.some((id) => !ix.fns.get(id)?.outside)).length} label="modules" />
+              {ex?.since && !ex.since.identical && <Stat value={ex.since.added + ex.since.changed} label="new or changed" />}
+            </>
+          ) : (
+            <>
+              <Stat value={meta.stats.changedFunctions} label="changed" />
+              <Stat value={meta.stats.impactedFunctions} label="impacted callers" />
+              <Stat value={graph.groups.filter((g) => g.kind === 'system').length} label="systems" />
+            </>
+          )}
           {enrichment && (
             <div className={`stat stat-risk risk-${riskLevel(risk)}`} title={`Scored by ${enrichment.provider}`}>
               <span className="stat-value">{risk.toFixed(2)}</span>
@@ -180,6 +266,7 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
         </button>
       </header>
 
+      {!ix.explore && (
       <nav className="layers" aria-label="Review layers">
         {LAYERS.map((l) => (
           <button key={l.id} className={`layer-tab ${layer === l.id ? 'active' : ''}`} onClick={() => setLayer(l.id)} title={l.hint}>
@@ -191,19 +278,23 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
           </button>
         ))}
       </nav>
+      )}
 
       <main className="workspace">
         <div className="stage">
           {layer === 1 && (
             <div className="map-toolbar">
               <div className="focus-bar">
-                <button className="icon-btn" onClick={() => stepChange(-1)} title="Previous change (←)" disabled={!ix.reviewOrder.length}>
+                <button className={`icon-btn home-btn ${inOverview ? 'active' : ''}`} onClick={showOverview} title="Overview (o)">
+                  ⌂
+                </button>
+                <button className="icon-btn" onClick={() => stepChange(-1)} title={`Previous ${stepNoun.toLowerCase()} (←)`} disabled={!tour.length}>
                   ‹
                 </button>
                 <span className="focus-count">
-                  {changeIndex >= 0 ? `Change ${changeIndex + 1} of ${ix.reviewOrder.length}` : 'Exploring'}
+                  {changeIndex >= 0 ? `${stepNoun} ${changeIndex + 1} of ${tour.length}` : inOverview ? 'Overview' : 'Exploring'}
                 </span>
-                <button className="icon-btn" onClick={() => stepChange(1)} title="Next change (→)" disabled={!ix.reviewOrder.length}>
+                <button className="icon-btn" onClick={() => stepChange(1)} title={`Next ${stepNoun.toLowerCase()} (→)`} disabled={!tour.length}>
                   ›
                 </button>
                 <span className="crumbs">
@@ -215,15 +306,30 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
                         onClick={() => setHistory((h) => h.slice(0, i + 1))}
                         title={ix.fns.get(id)?.file}
                       >
-                        {ix.fns.get(id)?.qualifiedName ?? id}
+                        {id === OVERVIEW ? 'Overview' : ix.fns.has(id) ? displayName(ix.fns.get(id)!) : id}
                       </button>
                     </span>
                   ))}
                 </span>
               </div>
               <div className="lod" role="radiogroup" aria-label="Level of detail">
+                {inOverview && hasTests && (
+                  <button className={`lod-btn tests-btn ${showTests ? 'active' : ''}`} onClick={() => setShowTests(!showTests)} aria-pressed={showTests} title="Show test code in the overview">
+                    Tests
+                  </button>
+                )}
                 <span className="lod-label">Detail</span>
-                {LODS.map((l) => (
+                <label className="budget" title="Most cards drawn at once; the rest fold into “+N more” cards">
+                  <span className="lod-label">Cards</span>
+                  <select value={budget} onChange={(e) => setBudget(Number(e.target.value))}>
+                    {BUDGETS.map((b) => (
+                      <option key={b} value={b}>
+                        {b || 'All'}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {LODS.filter((l) => l.id >= minLod).map((l) => (
                   <button key={l.id} role="radio" aria-checked={lod === l.id} className={`lod-btn ${lod === l.id ? 'active' : ''}`} onClick={() => changeLod(l.id)}>
                     {l.name}
                   </button>
@@ -231,7 +337,23 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
               </div>
             </div>
           )}
-          {layer === 1 && focus && (
+          {layer === 1 && inOverview && (
+            <OverviewCanvas
+              ix={ix}
+              lod={lod}
+              expandedGroups={expandedGroups}
+              selection={selection}
+              showTests={showTests}
+              budget={budget}
+              opened={opened}
+              onOpen={(key) => setOpened((o) => new Set(o).add(key))}
+              onShowAll={() => setBudget(0)}
+              onSelect={setSelection}
+              onFocus={centerOn}
+              onToggleGroup={toggleGroup}
+            />
+          )}
+          {layer === 1 && !inOverview && (
             <ImpactCanvas
               ix={ix}
               focus={focus}
@@ -239,6 +361,7 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
               expandedGroups={expandedGroups}
               expandedCols={expandedCols}
               selection={selection}
+              budget={budget}
               onSelect={setSelection}
               onFocus={centerOn}
               onToggleGroup={toggleGroup}
@@ -247,7 +370,7 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
           )}
           {layer === 2 && <InvariantCanvas ix={ix} selection={selection} onSelect={setSelection} />}
           {layer === 3 && <DiffView ix={ix} focusFn={selection?.kind === 'fn' ? selection.id : undefined} selection={selection} onSelect={setSelection} />}
-          {layer !== 3 && <Legend layer={layer} />}
+          {layer !== 3 && <Legend layer={layer} overview={inOverview} explore={ix.explore} />}
         </div>
         <aside className="panel">
           <Panel
@@ -285,13 +408,17 @@ function ImpactCanvas(props: {
   expandedGroups: Set<string>;
   expandedCols: Set<number>;
   selection: Selection;
+  budget: number;
   onSelect: (s: Selection) => void;
   onFocus: (id: string) => void;
   onToggleGroup: (id: string) => void;
   onExpandCol: (col: number) => void;
 }) {
-  const { ix, focus, lod, expandedGroups, expandedCols, selection, onSelect, onFocus, onToggleGroup, onExpandCol } = props;
-  const view = useMemo(() => buildMap(ix, focus, lod, expandedGroups, expandedCols, selection), [ix, focus, lod, expandedGroups, expandedCols, selection]);
+  const { ix, focus, lod, expandedGroups, expandedCols, selection, budget, onSelect, onFocus, onToggleGroup, onExpandCol } = props;
+  const view = useMemo(
+    () => buildMap(ix, focus, lod, expandedGroups, expandedCols, selection, budget),
+    [ix, focus, lod, expandedGroups, expandedCols, selection, budget],
+  );
 
   const itemOf = (node: Node) => (node.data as { item?: MapItem }).item;
   const onNodeClick: NodeMouseHandler<Node> = (_, node) => {
@@ -312,7 +439,7 @@ function ImpactCanvas(props: {
   return (
     <>
       <ReactFlow
-        key={`${focus}|${lod}|${[...expandedGroups].join(',')}|${[...expandedCols].join(',')}`}
+        key={`${focus}|${lod}|${budget}|${[...expandedGroups].join(',')}|${[...expandedCols].join(',')}`}
         nodes={view.nodes}
         edges={view.edges}
         nodeTypes={nodeTypes}
@@ -335,6 +462,78 @@ function ImpactCanvas(props: {
       <div className="map-stats">
         {view.stats.upstream} upstream · {view.stats.downstream} downstream
         {view.stats.hiddenHops && ' · more beyond 4 hops'}
+      </div>
+    </>
+  );
+}
+
+function OverviewCanvas(props: {
+  ix: Index;
+  lod: Lod;
+  expandedGroups: Set<string>;
+  selection: Selection;
+  showTests: boolean;
+  budget: number;
+  opened: Set<string>;
+  onOpen: (key: string) => void;
+  onShowAll: () => void;
+  onSelect: (s: Selection) => void;
+  onFocus: (id: string) => void;
+  onToggleGroup: (id: string) => void;
+}) {
+  const { ix, lod, expandedGroups, selection, showTests, budget, opened, onOpen, onShowAll, onSelect, onFocus, onToggleGroup } = props;
+  const view = useMemo(
+    () => buildOverview(ix, lod, expandedGroups, selection, { showTests, budget, opened }),
+    [ix, lod, expandedGroups, selection, showTests, budget, opened],
+  );
+  const itemOf = (node: Node) => (node.data as { item?: MapItem }).item;
+  return (
+    <>
+      <ReactFlow
+        key={`overview|${lod}|${showTests}|${budget}|${[...opened].join(',')}|${[...expandedGroups].join(',')}`}
+        nodes={view.nodes}
+        edges={view.edges}
+        nodeTypes={nodeTypes}
+        onNodeClick={(_, node) => {
+          const item = itemOf(node);
+          if (item?.kind === 'fn') onSelect({ kind: 'fn', id: item.fn!.id });
+          else if (item?.kind === 'group') onSelect({ kind: 'group', id: item.group!.id });
+          else if (item?.kind === 'sink') onSelect({ kind: 'sink', id: item.sink!.id });
+          else if (item?.kind === 'bundle' && item.group) onSelect({ kind: 'group', id: item.group.id });
+        }}
+        onNodeDoubleClick={(_, node) => {
+          const item = itemOf(node);
+          if (item?.kind === 'fn') onFocus(item.fn!.id);
+          else if (item?.kind === 'group') onToggleGroup(item.group!.id);
+          else if (item?.kind === 'bundle') onOpen(item.id.slice('rest|'.length));
+        }}
+        onPaneClick={() => onSelect(null)}
+        nodesConnectable={false}
+        nodesDraggable={false}
+        zoomOnDoubleClick={false}
+        fitView
+        fitViewOptions={{ padding: 0.1, maxZoom: 1 }}
+        minZoom={0.05}
+        proOptions={{ hideAttribution: true }}
+        colorMode="system"
+      >
+        <Background gap={24} size={1} />
+        <Controls showInteractive={false} />
+        <MiniMap pannable zoomable className="minimap" nodeClassName={(n) => `mm-${n.type}`} />
+      </ReactFlow>
+      <div className="map-stats">
+        {view.stats.folded > 0 ? (
+          <>
+            {view.stats.total - view.stats.folded} of {view.stats.total} parts shown · {view.stats.edges} connections ·{' '}
+            <button className="link" onClick={onShowAll}>
+              show all
+            </button>
+          </>
+        ) : (
+          <>
+            {view.stats.total} parts · {view.stats.edges} connections
+          </>
+        )}
       </div>
     </>
   );
@@ -371,9 +570,14 @@ function InvariantCanvas({ ix, selection, onSelect }: { ix: Index; selection: Se
   );
 }
 
-function Legend({ layer }: { layer: Layer }) {
+function Legend({ layer, overview, explore }: { layer: Layer; overview?: boolean; explore?: boolean }) {
   const items: [string, string][] =
-    layer === 1
+    overview || explore
+      ? [
+          ['ln-ok', 'calls (thicker = more)'],
+          ['ln-effect', 'external effect'],
+        ]
+      : layer === 1
       ? [
           ['ln-breaking', 'call into broken contract'],
           ['ln-dangling', 'call to deleted function'],
@@ -392,7 +596,7 @@ function Legend({ layer }: { layer: Layer }) {
           {label}
         </span>
       ))}
-      {layer === 1 && <span className="legend-tip">double-click: center / open group</span>}
+      {layer === 1 && <span className="legend-tip">{overview ? 'double-click: open group / center on function' : 'double-click: center / open group'}</span>}
     </div>
   );
 }

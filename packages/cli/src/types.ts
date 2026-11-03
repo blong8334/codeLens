@@ -1,6 +1,7 @@
 // Shared schema for the CodeLens graph JSON. The web canvas imports these types too.
 
-export type Language = 'typescript' | 'tsx' | 'javascript' | 'python';
+/** A language id from `src/lang` (e.g. `typescript`, `java`, `go`). */
+export type Language = string;
 export type ChangeStatus = 'added' | 'modified' | 'deleted' | 'unchanged';
 export type FnKind = 'function' | 'method' | 'arrow';
 
@@ -51,6 +52,10 @@ export interface FnNode {
   effects: string[];
   purpose?: Purpose;
   enrichment?: NodeEnrichment;
+  /** Explore mode: outside the explored scope, kept as one hop of context. */
+  outside?: boolean;
+  /** Explore mode: new or changed since the previous explore of this scope. */
+  since?: 'new' | 'changed';
 }
 
 export type EntryKind = 'route' | 'cli' | 'job' | 'test' | 'main' | 'public-api' | 'config';
@@ -100,7 +105,11 @@ export interface CallEdge {
 export interface CodeGraph {
   version: 2;
   meta: {
+    /** `review` (a diff, from `inspect`) or `explore` (a whole package). Absent means review. */
+    mode?: 'review' | 'explore';
     repo: string;
+    /** Explore mode: path of the explored package within the repository ('' = everything). */
+    scope?: string;
     base: string;
     head: string;
     generatedAt: string;
@@ -118,6 +127,43 @@ export interface CodeGraph {
   groups: Group[];
   sinks: Sink[];
   enrichment?: GraphEnrichment;
+  explore?: ExploreData;
+}
+
+// ---- Explore mode ----
+
+export interface Hotspot {
+  id: string;
+  score: number;
+  fanIn: number;
+  fanOut: number;
+  /** Distinct modules among its callers and callees. */
+  modules: number;
+  /** Transitive callers. */
+  reach: number;
+}
+
+export interface ExploreData {
+  /** Entry points in reading order: routes, CLIs, jobs, mains, public API, then tests. */
+  entries: string[];
+  /** The functions that hold the package together, most central first. */
+  hotspots: Hotspot[];
+  snapshot: {
+    commit: string | null;
+    dirty: boolean;
+    /** Store snapshot id, when the store recorded this run. */
+    id?: number;
+  };
+  /** Compared with the previous explore of the same scope, if there was one. */
+  since?: {
+    commit: string | null;
+    at: string;
+    added: number;
+    changed: number;
+    removed: number;
+    /** Nothing in scope changed: everything came from the store. */
+    identical: boolean;
+  };
 }
 
 // ---- Enrichment ----

@@ -79,6 +79,8 @@ export function buildMap(
   expandedGroups: Set<string>,
   expandedCols: Set<number>,
   selection: Selection,
+  /** Most cards to draw in total; 0 = no limit at all. */
+  budget = 0,
 ): MapView {
   const { hop, deeper } = hopsFrom(ix, focus);
 
@@ -111,11 +113,14 @@ export function buildMap(
   const columns = new Map<number, MapItem[]>();
   for (const item of items.values()) (columns.get(item.col) ?? columns.set(item.col, []).get(item.col)!).push(item);
   const itemRemap = new Map<string, string>();
+  // Share the card budget between the columns around the focus.
+  const sideCols = Math.max(1, columns.size - 1);
+  const cap = budget > 0 ? Math.min(COLUMN_CAP, Math.max(2, Math.floor((budget - 1) / sideCols))) : Number.POSITIVE_INFINITY;
   for (const [col, list] of columns) {
     list.sort((a, b) => b.score - a.score || label(a).localeCompare(label(b)));
-    if (col !== 0 && list.length > COLUMN_CAP && !expandedCols.has(col)) {
-      const shown = list.slice(0, COLUMN_CAP - 1);
-      const hidden = list.slice(COLUMN_CAP - 1);
+    if (col !== 0 && list.length > cap && !expandedCols.has(col)) {
+      const shown = list.slice(0, cap - 1);
+      const hidden = list.slice(cap - 1);
       const bundle: MapItem = { id: `bundle|${col}`, kind: 'bundle', col, fnIds: hidden.flatMap((h) => h.fnIds), hidden, score: -1 };
       for (const h of hidden) itemRemap.set(h.id, bundle.id);
       columns.set(col, [...shown, bundle]);

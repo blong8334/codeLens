@@ -2,12 +2,16 @@
   "name": "codelens",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "codelens": "tsx packages/cli/src/index.ts",
+    "explore": "tsx packages/cli/src/index.ts explore",
     "demo": "bash scripts/make-demo-repo.sh && npm run codelens -- inspect examples/demo-shop -b HEAD~1 -H HEAD --enrich -o packages/web/public/codelens.graph.json && npm run dev",
     "dev": "npm run -w @codelens/web dev",
     "build": "npm run -w @codelens/web build",
-    "typecheck": "npm run -w @codelens/cli typecheck && npm run -w @codelens/web typecheck"
+    "typecheck": "npm run -w @codelens/cli typecheck && npm run -w @codelens/web typecheck",
+    "test": "npm run -w @codelens/cli test"
   }
 }

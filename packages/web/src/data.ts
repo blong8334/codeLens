@@ -1,6 +1,9 @@
-import type { CallEdge, CodeGraph, FnNode, Group, Invariant, Sink } from '../../cli/src/types.ts';
+import type { CallEdge, CodeGraph, FnNode, Group, Hotspot, Invariant, Sink } from '../../cli/src/types.ts';
 
-export type { CallEdge, CodeGraph, FnNode, Group, Invariant, Sink };
+export type { CallEdge, CodeGraph, FnNode, Group, Hotspot, Invariant, Sink };
+
+/** History entry for the zoomed-out overview map (no focus function). */
+export const OVERVIEW = '__overview__';
 
 export type Layer = 1 | 2 | 3;
 
@@ -39,6 +42,10 @@ export interface Index {
   groupRisk: Map<string, number>;
   reviewOrder: string[];
   reviewRank: Map<string, number>;
+  explore: boolean;
+  /** Steppable entry points: everything but tests, unless tests are all there is. */
+  tour: string[];
+  hotspots: Map<string, Hotspot>;
 }
 
 export function buildIndex(graph: CodeGraph): Index {
@@ -68,13 +75,36 @@ export function buildIndex(graph: CodeGraph): Index {
     groupRisk,
     reviewOrder,
     reviewRank: new Map(reviewOrder.map((id, i) => [id, i])),
+    explore: graph.meta.mode === 'explore',
+    tour: tourOf(graph, fns),
+    hotspots: new Map((graph.explore?.hotspots ?? []).map((h) => [h.id, h])),
   };
+}
+
+function tourOf(graph: CodeGraph, fns: Map<string, FnNode>): string[] {
+  const entries = graph.explore?.entries ?? [];
+  const nonTest = entries.filter((id) => fns.get(id)?.entry?.kind !== 'test');
+  return nonTest.length ? nonTest : entries;
+}
+
+/** The overview's starting level: the coarsest one that still has several parts. */
+export function defaultOverviewLod(graph: CodeGraph): Lod {
+  const inside = new Set(graph.nodes.filter((n) => !n.outside).map((n) => n.id));
+  const count = (k: Group['kind']) => graph.groups.filter((g) => g.kind === k && g.fnIds.some((id) => inside.has(id))).length;
+  if (count('system') >= 3) return 3;
+  if (count('module') >= 2) return 2;
+  return 1;
 }
 
 function push<K, V>(map: Map<K, V[]>, key: K, value: V) {
   const list = map.get(key);
   if (list) list.push(value);
   else map.set(key, [value]);
+}
+
+/** How to show a function's name: top-level code is named after its file. */
+export function displayName(fn: FnNode): string {
+  return fn.qualifiedName === '(top level)' ? `${fn.file.slice(fn.file.lastIndexOf('/') + 1)} · top level` : fn.qualifiedName;
 }
 
 export const isChanged = (n: FnNode) => n.status !== 'unchanged';
