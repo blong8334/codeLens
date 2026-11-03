@@ -1,0 +1,30 @@
+{
+  "name": "@codelens/cli",
+  "version": "0.1.0",
+  "description": "Parse git diffs into enriched call graphs",
+  "scripts": {
+    "inspect": "tsx src/index.ts inspect",
+    "enrich": "tsx src/index.ts enrich",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.4.0",
+    "commander": "^15.0.0",
+    "diff": "^9.0.0",
+    "graphology": "^0.26.0",
+    "simple-git": "^4.0.2",
+    "tree-sitter-wasms": "^0.1.13",
+    "web-tree-sitter": "^0.22.6",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/diff": "^7.0.2",
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "bin": {
+    "codelens": "bin/codelens.js"
+  }
+}

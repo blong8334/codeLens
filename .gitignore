@@ -1,0 +1,9 @@
+node_modules/
+dist/
+examples/
+# Generated graphs (contain local paths and source excerpts)
+*.graph.json
+packages/web/public/codelens.*.json
+.env
+.env.*
+.DS_Store
