@@ -20,4 +20,6 @@ function serveGraph(): Plugin {
 
 export default defineConfig({
   plugins: [react(), serveGraph()],
+  // One bundle is fine for a local tool; React Flow alone is most of it.
+  build: { chunkSizeWarningLimit: 1500 },
 });

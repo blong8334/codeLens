@@ -257,11 +257,58 @@ function PurposeBlock({ fn }: { fn: FnNode }) {
   );
 }
 
+function PullRequestCard({ ix }: { ix: Index }) {
+  const pr = ix.graph.meta.pr;
+  const [open, setOpen] = useState(false);
+  if (!pr) return null;
+  const body = pr.body.trim();
+  return (
+    <div className="pr-card">
+      <div className="pr-card-head">
+        <span className={`pr-state pr-${pr.state}`}>{pr.state}</span>
+        <span className="muted small">
+          {pr.repo} #{pr.number}
+        </span>
+      </div>
+      <h2 className="panel-title">{pr.title}</h2>
+      <div className="pr-card-meta">
+        <span>
+          <b>{pr.author}</b> wants to merge <code>{pr.headRepo && pr.headRepo !== pr.repo ? `${pr.headRepo}:${pr.headRef}` : pr.headRef}</code> into <code>{pr.baseRef}</code>
+        </span>
+        {pr.changedFiles !== undefined && (
+          <span>
+            {pr.changedFiles} file{pr.changedFiles === 1 ? '' : 's'} · <span className="pr-add">+{pr.additions}</span> <span className="pr-del">−{pr.deletions}</span>
+          </span>
+        )}
+      </div>
+      {body && (
+        <div className={`pr-body ${open ? 'open' : ''}`}>
+          <div className="pr-body-text">{body}</div>
+          {body.length > 280 && (
+            <button className="link" onClick={() => setOpen(!open)}>
+              {open ? 'Show less' : 'Show the whole description'}
+            </button>
+          )}
+        </div>
+      )}
+      <div className="code-links">
+        <a className="btn btn-small" href={pr.url} target="_blank" rel="noreferrer">
+          ↗ Open on GitHub
+        </a>
+        <a className="btn btn-small" href={`${pr.url}/files`} target="_blank" rel="noreferrer">
+          Files changed
+        </a>
+      </div>
+    </div>
+  );
+}
+
 function OverviewPanel({ ix, focus, onFocus }: Props) {
   const order = ix.reviewOrder.map((id) => ix.fns.get(id)!).filter(Boolean);
   return (
     <div className="panel-inner">
-      <div className="panel-kicker">Review overview</div>
+      <PullRequestCard ix={ix} />
+      <div className="panel-kicker">{ix.graph.meta.pr ? 'CodeLens review' : 'Review overview'}</div>
       {ix.graph.enrichment ? (
         <p className="summary">
           <Prose text={ix.graph.enrichment.summary} />
@@ -277,7 +324,7 @@ function OverviewPanel({ ix, focus, onFocus }: Props) {
             <li key={fn.id}>
               <button className={`fn-link ${fn.id === focus ? 'is-current' : ''}`} onClick={() => onFocus(fn.id)} title="Center the map on this change">
                 <span className="fn-link-text">
-                  <span className="mono">{fn.qualifiedName}</span>
+                  <span className="mono">{displayName(fn)}</span>
                   {fn.purpose && <span className="fn-link-purpose">{fn.purpose.what}</span>}
                 </span>
                 {fn.enrichment && <RiskBar value={fn.enrichment.blastRadius} />}
@@ -385,7 +432,7 @@ function FnPanel({ ix, fn, focus, onSelect, onFocus, onLayer }: Props & { fn: Fn
         </p>
       )}
       <Section title={fn.qualifiedName === '(top level)' ? 'Source (top-level statements)' : `Source · lines ${fn.range.startLine}–${fn.range.endLine}`}>
-        <SourceBlock fn={fn} />
+        {fn.source ? <SourceBlock fn={fn} /> : <p className="muted small">This graph was saved without source code (<code>--no-source</code>). Use the links above to read it.</p>}
       </Section>
       {fn.effects.length > 0 && (
         <Section title="External effects" count={fn.effects.length}>

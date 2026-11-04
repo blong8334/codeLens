@@ -49,6 +49,16 @@ npm run explore -- ~/code/some-repo/services/billing --open
 # With AI descriptions through your Claude Code subscription (cached: you pay once per function)
 npm run explore -- ~/code/some-repo -p claude-code --open
 
+# Your own model: any OpenAI-compatible API, or a local one (see Enrichment below)
+npm run explore -- ~/code/some-repo -p openai -m llama3.1 --base-url http://localhost:11434/v1 --open
+
+# A graph to share: structure and descriptions only, no source code
+npm run explore -- ~/code/some-repo --no-source -o some-repo.graph.json
+
+# Open the latest graph again (or a given one) without re-running anything
+npm run codelens -- view
+npm run codelens -- view some-repo.graph.json
+
 # A specific commit or branch instead of the files on disk
 npm run explore -- ~/code/some-repo --ref v2.1.0 --open
 
@@ -76,7 +86,18 @@ Press `/` to search functions, files, and modules, and `o` to return to the over
 
 ### The store
 
-Everything CodeLens learns is kept in one SQLite database (Node's built-in `node:sqlite`, no extra dependency) at `~/.cache/codelens/store.db`. Move it with `--store <file>` or `CODELENS_STORE`, or bypass it with `--no-store`.
+Everything CodeLens learns is kept in a store. It's one of two kinds:
+
+- **A SQLite file** (the default, using Node's built-in `node:sqlite`, no setup) at `~/.cache/codelens/store.db`.
+- **A Postgres database**, shared by a team, so descriptions are paid for once per team rather than once per person.
+
+```bash
+--store ~/somewhere/else.db                               # another SQLite file
+--store postgres://user:pass@db.internal/codelens         # Postgres, schema "codelens"
+--store 'postgres://user:pass@db.internal/codelens?schema=team_payments'
+```
+
+`CODELENS_STORE` sets the default, and `--no-store` bypasses it. In Postgres, each store lives in its own **schema**, so teams (or, hosted, customers) are fully separated. Keys are content hashes, so never share one schema between parties who must not learn about each other's code. Reads and writes are batched (a few round trips per run), so a remote database is fine.
 
 | Table | Keyed by | Holds |
 |---|---|---|
@@ -86,6 +107,74 @@ Everything CodeLens learns is kept in one SQLite database (Node's built-in `node
 | `snapshot_fns` | snapshot + function id | each function's fingerprint, to compute "new / changed since" |
 
 Because everything is keyed by **content**, the store works across branches, rebases, and uncommitted edits. A file that is unchanged since any earlier run is never read or parsed again, and an unchanged function is never described again. The commit id on each snapshot is what "since your last look (abc1234)" refers to. The extractor version is a hash of the parser code itself, so upgrading CodeLens automatically re-parses with the new rules. Old JSON description caches are imported on first use.
+
+## Review pull requests
+
+```bash
+# Review the current branch the way a pull request would be (against the fork point of origin's default branch)
+npm run codelens -- review
+
+# Against a specific base, with Claude, writing the map too
+npm run codelens -- review . --base origin/develop -p claude-code -o review.md -g review.graph.json
+npm run codelens -- view review.graph.json
+
+# In CI: fail when the overall risk is high
+npm run codelens -- review --fail-on high
+```
+
+The summary is Markdown written for a PR comment:
+- the overall risk;
+- functions in the order to review them, each linked to its lines on GitHub;
+- breaking contract changes as signature diffs;
+- invariants at risk;
+- which routes, CLIs, and jobs reach the change;
+- which external systems (databases, APIs, queues) it touches.
+
+`--json` or `--json-out` give the same facts as data for other tools.
+
+### Open a pull request in CodeLens
+
+```bash
+npm run pr -- 123                                              # a PR in the repo you're in
+npm run pr -- https://github.com/expressjs/express/pull/7574   # any PR, cloned or not
+npm run pr -- expressjs/express#7574 -p claude-code            # with Claude's analysis
+```
+
+The command:
+1. looks up the PR (title, author, description, branches);
+2. fetches its code, using your clone when you're in one, else a code-only clone kept in `~/.cache/codelens/repos/`;
+3. reviews it against the same fork point GitHub's diff uses;
+4. opens the canvas with the PR in the header and side panel, including **Open on GitHub** and **Files changed**.
+
+It also writes the Markdown review next to the graph. Fork PRs work, because GitHub publishes every PR's head on the base repository.
+
+Auth: it uses your `gh` login when you're signed in (private repos and GitHub Enterprise), else `GITHUB_TOKEN`; public repos need neither.
+
+### GitHub Action
+
+```yaml
+# .github/workflows/codelens.yml
+on: pull_request
+permissions: { contents: read, pull-requests: write }
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: blong8334/codeLens@main
+        with:
+          provider: heuristic          # or claude + anthropic-api-key, or openai + openai-api-key / openai-base-url
+          # fail-on: high
+```
+
+On each pull request, the Action:
+- posts the review as a comment and updates the same comment on every push;
+- adds it to the run's summary page;
+- attaches the map as an artifact (`codelens-map`, viewed with `codelens view`);
+- caches the store between runs, so each function is analyzed once rather than once per PR.
+
+Inputs: `provider`, `model`, `anthropic-api-key`, `openai-api-key`, `openai-base-url`, `base`, `fail-on`, `comment`, `descriptions`, `include-source`. Output: `risk`.
 
 ## Review your own diffs
 
@@ -194,6 +283,11 @@ Low-confidence matches are marked as such. Calls to a function deleted in the di
 - `heuristic` runs offline and is deterministic. It diffs signatures to find contract breaks (required params added or removed, type changes, sync↔async), flags protective constructs the diff removed as invariants at risk (null guards, validation calls, bounds checks, try/catch, locks), and scores blast radius from reach, exported surface, breaking changes, and dangling callers.
 - `claude-code` runs `claude -p` with a JSON schema for each changed function. It uses your signed-in Claude Code subscription, so it needs no API key. Defaults to `--model opus`.
 - `claude` sends each changed function to Claude Opus 5.5 (`claude-opus-5-5`), together with its callers, callees, and the heuristic findings. It uses structured outputs (Zod), server-side refusal fallback, and per-node fallback to the heuristic result on error. Pick another model with `--model`.
+- `openai` talks to **any OpenAI-compatible API**: OpenAI, Azure OpenAI, OpenRouter, Together, Groq, or a local server (Ollama, LM Studio, llama.cpp, vLLM). It uses strict structured outputs where supported, and tolerates models that wrap JSON in prose. It retries rate limits and server errors. Requires `--model` (or `CODELENS_MODEL`), reads `OPENAI_API_KEY` and `OPENAI_BASE_URL`, or takes `--base-url`:
+  ```bash
+  OPENAI_API_KEY=sk-… npm run explore -- . -p openai -m gpt-4.1-mini
+  npm run explore -- . -p openai -m llama3.1 --base-url http://localhost:11434/v1   # Ollama: nothing leaves your machine
+  ```
 
 **Descriptions** (`packages/cli/src/purpose.ts`): every function gets a *what / why*, written in batches of 10 per request. Files, modules, and systems are then summarized bottom-up from their members; a group with one child reuses that child's summary. Results are kept in the store by content hash, so re-runs only pay for new or edited code. Pass `--no-purpose` to skip this step. Without an LLM, descriptions fall back to doc comments and call context.
 

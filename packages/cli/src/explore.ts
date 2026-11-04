@@ -9,7 +9,7 @@ import { remoteInfo, WORKING_TREE } from './git.ts';
 import { detectEntry } from './hierarchy.ts';
 import { loadFiles } from './parse.ts';
 import { openSnapshot } from './source.ts';
-import type { SnapshotRecord, Store } from './store.ts';
+import type { SnapshotRecord, Store } from './store/index.ts';
 import type { CodeGraph, EntryKind, FnNode, Hotspot } from './types.ts';
 
 export interface ExploreOptions {
@@ -27,7 +27,7 @@ export interface ExploreOptions {
 export interface ExploreResult {
   graph: CodeGraph;
   /** Remember this run in the store so the next explore can say what changed. */
-  record(provider: string): SnapshotRecord | undefined;
+  record(provider: string): Promise<SnapshotRecord | undefined>;
 }
 
 const README = /^readme(\.(md|markdown|rst|txt))?$/i;
@@ -122,11 +122,11 @@ export async function explore(dir: string, opts: ExploreOptions = {}): Promise<E
   const tree = createHash('sha1');
   for (const f of snapshot.files.filter((f) => inScope(f.path) && files.has(f.path)).sort((a, b) => a.path.localeCompare(b.path))) tree.update(`${f.path}\0${f.blob}\n`);
   const treeHash = tree.digest('hex');
-  const prev = opts.store?.lastSnapshot(snapshot.root, scope);
+  const prev = await opts.store?.lastSnapshot(snapshot.root, scope);
   let since: NonNullable<CodeGraph['explore']>['since'];
   if (prev && opts.store) {
     const identical = prev.tree === treeHash;
-    const before = opts.store.snapshotFunctions(prev.id);
+    const before = await opts.store.snapshotFunctions(prev.id);
     // Match by content as well as id, so a function that was only renamed or moved — or renamed
     // by a newer CodeLens parsing the same code differently — is not reported as new.
     const beforeContent = new Set(before.values());
@@ -179,9 +179,9 @@ export async function explore(dir: string, opts: ExploreOptions = {}): Promise<E
 
   return {
     graph: graphOut,
-    record(provider) {
+    async record(provider) {
       if (!opts.store) return undefined;
-      const rec = opts.store.recordSnapshot(
+      const rec = await opts.store.recordSnapshot(
         {
           repo: snapshot.root,
           scope,

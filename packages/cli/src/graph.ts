@@ -5,7 +5,7 @@ import { remoteInfo, Repo, WORKING_TREE } from './git.ts';
 import { detectEntry } from './hierarchy.ts';
 import { languageFor, loadFiles, parseFile, type ExtractedFile, type ExtractedFn } from './parse.ts';
 import { openSnapshot } from './source.ts';
-import type { Store } from './store.ts';
+import type { Store } from './store/index.ts';
 import type { ChangeStatus, CodeGraph, FnNode } from './types.ts';
 
 export interface InspectOptions {

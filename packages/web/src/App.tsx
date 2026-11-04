@@ -239,6 +239,13 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
               {ex?.snapshot.commit ? ex.snapshot.commit.slice(0, 7) : 'no git'}
               {ex?.snapshot.dirty ? ' + uncommitted' : ''}
             </span>
+          ) : meta.pr ? (
+            <a className="pr-title" href={meta.pr.url} target="_blank" rel="noreferrer" title={`Open #${meta.pr.number} on GitHub`}>
+              <span className={`pr-state pr-${meta.pr.state}`}>{meta.pr.state}</span>
+              <span className="pr-number">#{meta.pr.number}</span>
+              <span className="pr-name">{meta.pr.title}</span>
+              <span className="pr-go">↗</span>
+            </a>
           ) : (
             <span className="mono rev">
               {meta.base} → {meta.head === 'WORKING' ? 'working tree' : meta.head}

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { GuideInput, GuideOutput } from './guide.ts';
-import type { Store } from './store.ts';
+import type { DescriptionKind, Store } from './store/index.ts';
 import type { CodeGraph, FnNode, Group, Purpose } from './types.ts';
 
 export interface PurposeInput {
@@ -52,6 +52,7 @@ export async function describeGraph(
   // ---- functions ----
   const fnKey = (n: FnNode) => hash(describer.name, 'fn', n.file, n.qualifiedName, n.source);
   const pending: FnNode[] = [];
+  await cache.prefetch(graph.nodes.map(fnKey));
   for (const n of graph.nodes) {
     const hit = cache.get<{ what: string; why: string }>(fnKey(n));
     if (hit) n.purpose = { ...hit, source: sourceOf(describer) };
@@ -90,6 +91,7 @@ export async function describeGraph(
         described++;
       }
     }
+    await cache.flush();
   });
 
   // ---- groups, bottom-up: file → module → system ----
@@ -99,6 +101,7 @@ export async function describeGraph(
   for (const kind of ['file', 'module', 'system'] as const) {
     const level = graph.groups.filter((g) => g.kind === kind);
     const inputs: { group: Group; children: { label: string; summary: string }[]; key: string }[] = [];
+    const candidates: typeof inputs = [];
     for (const group of level) {
       const children =
         kind === 'file'
@@ -109,10 +112,13 @@ export async function describeGraph(
         group.summary = children[0].summary;
         continue;
       }
-      const key = hash(describer.name, 'group', kind, group.label, ...children.map((c) => `${c.label}:${c.summary}`));
-      const hit = cache.get<string>(key);
-      if (hit) group.summary = hit;
-      else inputs.push({ group, children: children.slice(0, 20), key });
+      candidates.push({ group, children: children.slice(0, 20), key: hash(describer.name, 'group', kind, group.label, ...children.map((c) => `${c.label}:${c.summary}`)) });
+    }
+    await cache.prefetch(candidates.map((c) => c.key));
+    for (const c of candidates) {
+      const hit = cache.get<string>(c.key);
+      if (hit) c.group.summary = hit;
+      else inputs.push(c);
     }
     const batches = chunk(inputs, GROUP_BATCH);
     if (inputs.length) opts.log(`  summarizing ${inputs.length} ${kind} group${inputs.length > 1 ? 's' : ''}`);
@@ -132,6 +138,7 @@ export async function describeGraph(
         b.group.summary = summary ?? b.children.map((c) => c.label).slice(0, 3).join(', ');
         if (summary && !fromFallback && describer.name !== 'heuristic') cache.set(b.key, 'group', summary);
       });
+      await cache.flush();
     });
   }
   return { described, cached: graph.nodes.length - pending.length };
@@ -204,15 +211,31 @@ async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<v
   }));
 }
 
-/** Store-backed when a store is given; otherwise remembers only for this run. */
+/**
+ * Store-backed when a store is given; otherwise remembers only for this run. Keys are fetched in
+ * bulk with prefetch() and new values written in bulk with flush(), so a remote store costs a
+ * handful of round trips rather than one per function.
+ */
 class DescriptionCache {
   private memory = new Map<string, unknown>();
+  private asked = new Set<string>();
+  private pending: { key: string; kind: DescriptionKind; value: unknown }[] = [];
   constructor(private store?: Store) {}
-  get<T>(key: string): T | undefined {
-    return (this.memory.get(key) as T | undefined) ?? this.store?.getDescription<T>(key);
+  async prefetch(keys: string[]) {
+    const missing = keys.filter((k) => !this.asked.has(k));
+    for (const k of missing) this.asked.add(k);
+    if (!this.store || !missing.length) return;
+    for (const [k, v] of await this.store.getDescriptions(missing)) this.memory.set(k, v);
   }
-  set(key: string, kind: 'fn' | 'group', value: unknown) {
+  get<T>(key: string): T | undefined {
+    return this.memory.get(key) as T | undefined;
+  }
+  set(key: string, kind: DescriptionKind, value: unknown) {
     this.memory.set(key, value);
-    this.store?.putDescription(key, kind, value);
+    this.pending.push({ key, kind, value });
+  }
+  async flush() {
+    const rows = this.pending.splice(0);
+    if (this.store && rows.length) await this.store.putDescriptions(rows);
   }
 }

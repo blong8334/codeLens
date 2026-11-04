@@ -14,14 +14,17 @@
     "commander": "^15.0.0",
     "diff": "^9.0.0",
     "graphology": "^0.26.0",
+    "pg": "^8.23.1",
     "simple-git": "^4.0.2",
     "tree-sitter-wasms": "^0.1.13",
     "web-tree-sitter": "^0.22.6",
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.15",
     "@types/diff": "^7.0.2",
     "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },

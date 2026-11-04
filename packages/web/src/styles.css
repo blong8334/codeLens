@@ -448,3 +448,23 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 0 5px; border: 1px sol
 .guide-row-sub { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .guide-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .guide-chip { font-size: 12.5px; padding: 4px 10px; border-radius: 999px; background: var(--impacted-soft); color: var(--impacted); font-weight: 600; }
+
+/* ---- pull requests ---- */
+.pr-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: min(560px, 50vw); color: var(--text); text-decoration: none; font-size: 13.5px; }
+.pr-title:hover .pr-name { text-decoration: underline; }
+.pr-number { color: var(--muted); font-family: var(--mono); }
+.pr-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.pr-go { color: var(--faint); }
+.pr-state { flex: none; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--muted); }
+.pr-state.pr-open { background: var(--add-bg); color: var(--add-fg); }
+.pr-state.pr-merged { background: var(--accent-soft); color: var(--accent); }
+.pr-state.pr-closed { background: var(--del-bg); color: var(--del-fg); }
+.pr-card { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.pr-card-head { display: flex; align-items: center; gap: 8px; }
+.pr-card-meta { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: var(--muted); }
+.pr-card-meta code { font-size: 11.5px; }
+.pr-add { color: var(--add-fg); font-weight: 600; }
+.pr-del { color: var(--del-fg); font-weight: 600; }
+.pr-body { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.pr-body-text { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 7.5em; overflow: hidden; mask-image: linear-gradient(to bottom, #000 60%, transparent); }
+.pr-body.open .pr-body-text { max-height: none; mask-image: none; }

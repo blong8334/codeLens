@@ -3,7 +3,7 @@
 // (one request per explore, stored by content) or, offline, assembled from the README and summaries.
 import { createHash } from 'node:crypto';
 import type { Describer } from './purpose.ts';
-import type { Store } from './store.ts';
+import type { Store } from './store/index.ts';
 import type { CodeGraph, FnNode, Group, Guide } from './types.ts';
 
 export interface GuideInput {
@@ -36,12 +36,12 @@ export async function buildGuide(
   const key = createHash('sha1')
     .update([describer.name, 'guide', JSON.stringify({ ...input, candidates: input.candidates.map((c) => [c.key, c.node.id, c.node.purpose?.what, c.role]) })].join('\0'))
     .digest('hex');
-  const cached = opts.store?.getDescription<GuideOutput>(key);
+  const cached = (await opts.store?.getDescriptions([key]))?.get(key) as GuideOutput | undefined;
   if (cached) return finish(cached, byKey, 'llm');
   opts.log('  writing the package guide');
   try {
     const out = await describer.describeGuide(input);
-    opts.store?.putDescription(key, 'group', out);
+    await opts.store?.putDescriptions([{ key, kind: 'guide', value: out }]);
     return finish(out, byKey, 'llm');
   } catch (err) {
     opts.log(`  ! guide failed (${(err as Error).message}); using the README and summaries`);

@@ -4,8 +4,8 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { extract, type ExtractedFile } from './lang/engine.ts';
 import { specForPath, type LanguageSpec } from './lang/index.ts';
-import type { Snapshot } from './source.ts';
-import type { Store } from './store.ts';
+import type { Snapshot, SourceFile } from './source.ts';
+import type { Store } from './store/index.ts';
 
 export type { ExtractedCall, ExtractedFile, ExtractedFn } from './lang/engine.ts';
 
@@ -77,45 +77,53 @@ export async function loadFiles(
   const files = new Map<string, ExtractedFile>();
   const stats: LoadStats = { parsed: 0, cached: 0, skipped: 0 };
   const store = opts.store;
-  // Batch inserts into transactions: thousands of small writes become a few disk syncs.
-  let pending = 0;
-  store?.begin();
-  try {
-    for (const f of snapshot.files) {
-      const spec = specForPath(f.path);
-      if (!spec || !opts.include(f.path)) continue;
-      if ((f.size ?? 0) > MAX_FILE_BYTES) {
-        stats.skipped++;
-        continue;
-      }
-      const extractor = `${spec.id}:${EXTRACTOR_VERSION}`;
-      const hit = store?.getParse(f.blob, extractor);
-      if (hit) {
-        files.set(f.path, { ...(JSON.parse(hit) as Omit<ExtractedFile, 'path'>), path: f.path });
-        stats.cached++;
-        continue;
-      }
-      const source = await snapshot.read(f);
-      if (source == null || source.length > MAX_FILE_BYTES) {
-        stats.skipped++;
-        continue;
-      }
-      const parsed = await parseFile(f.path, source);
-      if (!parsed) continue;
-      files.set(f.path, parsed);
-      stats.parsed++;
-      if (store) {
-        const { path: _path, ...data } = parsed;
-        store.putParse(f.blob, extractor, JSON.stringify(data));
-        if (++pending >= 200) {
-          store.commit();
-          store.begin();
-          pending = 0;
-        }
-      }
+  // Which files need parsing, grouped by extractor so the store is asked once per language.
+  const wanted: { f: SourceFile; extractor: string }[] = [];
+  for (const f of snapshot.files) {
+    const spec = specForPath(f.path);
+    if (!spec || !opts.include(f.path)) continue;
+    if ((f.size ?? 0) > MAX_FILE_BYTES) {
+      stats.skipped++;
+      continue;
     }
-  } finally {
-    store?.commit();
+    wanted.push({ f, extractor: `${spec.id}:${EXTRACTOR_VERSION}` });
   }
+  const cached = new Map<string, Map<string, string>>();
+  if (store) {
+    for (const extractor of new Set(wanted.map((w) => w.extractor))) {
+      cached.set(extractor, await store.getParses(extractor, wanted.filter((w) => w.extractor === extractor).map((w) => w.f.blob)));
+    }
+  }
+  // New parses are written in batches, so an interrupted run still keeps most of its work.
+  const pending = new Map<string, { blob: string; data: string }[]>();
+  let buffered = 0;
+  const flush = async () => {
+    for (const [extractor, rows] of pending) await store!.putParses(extractor, rows);
+    pending.clear();
+    buffered = 0;
+  };
+  for (const { f, extractor } of wanted) {
+    const hit = cached.get(extractor)?.get(f.blob);
+    if (hit) {
+      files.set(f.path, { ...(JSON.parse(hit) as Omit<ExtractedFile, 'path'>), path: f.path });
+      stats.cached++;
+      continue;
+    }
+    const source = await snapshot.read(f);
+    if (source == null || source.length > MAX_FILE_BYTES) {
+      stats.skipped++;
+      continue;
+    }
+    const parsed = await parseFile(f.path, source);
+    if (!parsed) continue;
+    files.set(f.path, parsed);
+    stats.parsed++;
+    if (store) {
+      const { path: _path, ...data } = parsed;
+      (pending.get(extractor) ?? pending.set(extractor, []).get(extractor)!).push({ blob: f.blob, data: JSON.stringify(data) });
+      if (++buffered >= 200) await flush();
+    }
+  }
+  if (store) await flush();
   return { files, stats };
 }

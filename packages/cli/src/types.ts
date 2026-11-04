@@ -113,6 +113,10 @@ export interface CodeGraph {
     base: string;
     head: string;
     generatedAt: string;
+    /** Set when the graph reviews a GitHub pull request (`codelens pr`). */
+    pr?: PullRequestInfo;
+    /** False when written with --no-source: nodes carry no code or diffs. */
+    sourceIncluded?: boolean;
     /** Where the code can be browsed online, for links from the canvas. */
     remote?: { web: string; host: 'github' | 'gitlab' | 'bitbucket' | 'other'; commit: string };
     /** Config file that overrode auto-detection, if one was found. */
@@ -130,6 +134,23 @@ export interface CodeGraph {
   sinks: Sink[];
   enrichment?: GraphEnrichment;
   explore?: ExploreData;
+}
+
+export interface PullRequestInfo {
+  number: number;
+  title: string;
+  url: string;
+  author: string;
+  state: 'open' | 'draft' | 'closed' | 'merged';
+  baseRef: string;
+  headRef: string;
+  /** `owner/repo` the head branch lives in (differs from `repo` for forks). */
+  headRepo?: string;
+  repo: string;
+  body: string;
+  additions?: number;
+  deletions?: number;
+  changedFiles?: number;
 }
 
 // ---- Explore mode ----

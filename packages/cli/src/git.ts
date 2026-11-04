@@ -106,3 +106,28 @@ export function webUrl(remote: string): string | undefined {
   if (m) return `https://${m[1]}/${m[2]}`;
   return undefined;
 }
+
+/**
+ * The revision a branch should be reviewed against, the way a pull request is: the merge base of
+ * `base` (default: the remote's default branch, else main/master) and `head`.
+ */
+export async function reviewBase(root: string, base: string | undefined, head: string): Promise<{ base: string; label: string }> {
+  const git = simpleGit(root);
+  // `--quiet` makes git exit silently on a missing ref, which simple-git does not treat as an
+  // error, so check that it actually printed a commit id.
+  const exists = (ref: string) => git.raw(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]).then((out) => /^[0-9a-f]{40}/.test(out.trim()), () => false);
+  let target = base;
+  if (!target) {
+    const remoteHead = await git.raw(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']).then((s) => s.trim().replace('refs/remotes/', ''), () => '');
+    for (const candidate of [remoteHead, 'origin/main', 'origin/master', 'main', 'master'].filter(Boolean)) {
+      if (await exists(candidate)) {
+        target = candidate;
+        break;
+      }
+    }
+    if (!target) throw new Error('could not find a base branch; pass --base <ref>');
+  }
+  const headRef = head === WORKING_TREE ? 'HEAD' : head;
+  const mergeBase = await git.raw(['merge-base', target, headRef]).then((s) => s.trim(), () => '');
+  return mergeBase ? { base: mergeBase, label: `${target} (fork point ${mergeBase.slice(0, 7)})` } : { base: target, label: target };
+}

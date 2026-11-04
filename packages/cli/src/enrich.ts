@@ -1,4 +1,4 @@
-import type { Store } from './store.ts';
+import type { Store } from './store/index.ts';
 import type {
   CodeGraph,
   ContractChange,
@@ -217,7 +217,7 @@ export function compareContracts(node: FnNode): ContractChange {
   const newThrows = [...throwsAfter].filter((t) => !throwsBefore.has(t));
   if (newThrows.length) {
     kinds.push('throws-changed');
-    notes.push(`new failure path: ${newThrows[0]}`);
+    notes.push(`new failure path: ${code(newThrows[0])}`);
   }
   if (!kinds.length) {
     kinds.push('behavioral');
@@ -253,17 +253,17 @@ interface InvariantRule {
 const GUARD_RULES: InvariantRule[] = [
   {
     pattern: /\bif\s*\(\s*!\s*[\w.]+\s*\)|\bif\s*\([^)]*(===?|!==?)\s*(null|undefined)\b|\bif\s+not\s+\w+|\bif\s+[\w.]+\s+is\s+None\b/,
-    statement: (m) => `Missing/null input is rejected before use (\`${m.trim()}\`)`,
+    statement: (m) => `Missing/null input is rejected before use (${code(m.trim())})`,
     risk: 'high',
   },
   {
     pattern: /\b\w*(assert|validate|check|guard|ensure|verify|authorize|authenticate|permission)\w*\s*\(/i,
-    statement: (m) => `Validation/authorization runs before side effects (\`${m.replace(/\($/, '').trim()}\`)`,
+    statement: (m) => `Validation/authorization runs before side effects (${code(m.replace(/\($/, '').trim())})`,
     risk: 'high',
   },
   {
     pattern: /\bif\s*\([^)]*[<>]=?\s*[\w.]+\)/,
-    statement: (m) => `Bounds/limit check holds (\`${m.trim()}\`)`,
+    statement: (m) => `Bounds/limit check holds (${code(m.trim())})`,
     risk: 'medium',
   },
   {
@@ -273,7 +273,7 @@ const GUARD_RULES: InvariantRule[] = [
   },
   {
     pattern: /\b(BEGIN|COMMIT|ROLLBACK|transaction|withLock|lock\(|mutex)\b/i,
-    statement: (m) => `Operation is atomic/serialized (\`${m.trim()}\`)`,
+    statement: (m) => `Operation is atomic/serialized (${code(m.trim())})`,
     risk: 'high',
   },
   {
@@ -307,7 +307,7 @@ export function detectInvariants(node: FnNode): Invariant[] {
   }
   for (const t of node.throws) {
     if (node.status === 'modified' && !node.before?.throws.includes(t)) {
-      out.push({ statement: `Callers must handle new failure: \`${t}\``, status: 'at-risk', risk: 'medium', evidence: t });
+      out.push({ statement: `Callers must handle new failure: ${code(t)}`, status: 'at-risk', risk: 'medium', evidence: t });
     }
   }
   if (node.before && node.signature.async !== node.before.signature.async) {
@@ -354,3 +354,11 @@ async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<v
 
 const round = (n: number) => Math.round(n * 100) / 100;
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** Inline Markdown code that survives backticks inside it (`` a `b` c ``). */
+export function code(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((r) => r.length));
+  const fence = '`'.repeat(longest + 1);
+  const pad = longest ? ' ' : '';
+  return `${fence}${pad}${text}${pad}${fence}`;
+}

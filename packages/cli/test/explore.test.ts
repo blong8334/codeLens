@@ -8,9 +8,24 @@ import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { explore } from '../src/explore.ts';
 import { describeGraph, heuristicDescriber, type Describer } from '../src/purpose.ts';
-import { Store } from '../src/store.ts';
+import { PGlite } from '@electric-sql/pglite';
+import { openStore, SqlStore, type Store } from '../src/store/index.ts';
+import { pgDriver } from '../src/store/postgres.ts';
 
 const dirs: string[] = [];
+
+/** Every store-backed test runs on both drivers: SQLite, and real Postgres (PGlite, in-process). */
+const STORES: [string, () => Promise<Store>][] = [
+  ['sqlite', () => openStore(':memory:')],
+  [
+    'postgres',
+    async () => {
+      const pg = new PGlite();
+      return SqlStore.open(pgDriver(pg, async (sql) => void (await pg.exec(sql)), () => pg.close()), { schema: 'team_a', location: 'pglite' });
+    },
+  ],
+];
+const memoryStore = () => openStore(':memory:');
 after(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 function tempDir(files: Record<string, string>, git = true) {
@@ -90,7 +105,7 @@ const fn = (g: Awaited<ReturnType<typeof explore>>['graph'], q: string) => {
 
 test('explore: whole-package graph with entry points, hotspots and effects', async () => {
   const dir = tempDir(SHOP);
-  const { graph } = await explore(dir, { store: new Store(':memory:') });
+  const { graph } = await explore(dir, { store: await memoryStore() });
   assert.equal(graph.meta.mode, 'explore');
   const server = graph.nodes.find((n) => n.file === 'api/server.ts')!;
   assert.equal(server.qualifiedName, '(top level)', 'route wiring at top level is kept');
@@ -107,7 +122,7 @@ test('explore: whole-package graph with entry points, hotspots and effects', asy
 
 test('explore: a subdirectory keeps one hop of outside context', async () => {
   const dir = tempDir(SHOP);
-  const { graph } = await explore(join(dir, 'orders'), { store: new Store(':memory:') });
+  const { graph } = await explore(join(dir, 'orders'), { store: await memoryStore() });
   assert.equal(graph.meta.scope, 'orders');
   assert.ok(!fn(graph, 'placeOrder').outside);
   assert.equal(fn(graph, 'save').outside, true, 'callee outside the scope');
@@ -116,19 +131,19 @@ test('explore: a subdirectory keeps one hop of outside context', async () => {
   assert.equal(graph.meta.stats.functions, graph.nodes.filter((n) => !n.outside).length);
 });
 
-test('store: parses are reused by content, and snapshots report what changed', async () => {
+for (const [driver, makeStore] of STORES) test(`store (${driver}): parses are reused by content, and snapshots report what changed`, async () => {
   const dir = tempDir(SHOP);
-  const store = new Store(':memory:');
+  const store = await makeStore();
   const logs: string[] = [];
   const first = await explore(dir, { store, log: (m) => logs.push(m) });
   assert.equal(first.graph.explore!.since, undefined, 'nothing to compare the first time');
-  first.record('heuristic');
+  await first.record('heuristic');
 
   logs.length = 0;
   const again = await explore(dir, { store, log: (m) => logs.push(m) });
   assert.ok(logs.some((l) => /from cache, 0 parsed/.test(l)), logs.join('\n'));
   assert.equal(again.graph.explore!.since?.identical, true);
-  again.record('heuristic');
+  await again.record('heuristic');
 
   write(dir, {
     'orders/price.ts': SHOP['orders/price.ts'].replace('?? 1', '?? 2') + '\nexport function discount(total: number) {\n  return total * 0.9;\n}\n',
@@ -146,9 +161,9 @@ test('store: parses are reused by content, and snapshots report what changed', a
   assert.ok(logs.some((l) => /1 parsed/.test(l)), `only the edited file is re-parsed: ${logs.join('\n')}`);
 });
 
-test('store: descriptions are written once per function content', async () => {
+for (const [driver, makeStore] of STORES) test(`store (${driver}): descriptions are written once per function content`, async () => {
   const dir = tempDir(SHOP);
-  const store = new Store(':memory:');
+  const store = await makeStore();
   let calls = 0;
   const counting: Describer = {
     name: 'counting',
@@ -179,7 +194,7 @@ test('store: descriptions are written once per function content', async () => {
 
 test('explore: works on a plain directory without git', async () => {
   const dir = tempDir({ 'tool.py': 'import subprocess\n\ndef run(cmd):\n    return subprocess.run(cmd)\n\nif __name__ == "__main__":\n    run(["ls"])\n' }, false);
-  const { graph } = await explore(dir, { store: new Store(':memory:') });
+  const { graph } = await explore(dir, { store: await memoryStore() });
   assert.equal(graph.explore!.snapshot.commit, null);
   const top = graph.nodes.find((n) => n.qualifiedName === '(top level)')!;
   assert.equal(top.entry?.kind, 'main', '__main__ guard');
@@ -231,7 +246,7 @@ res.send('hi');
 if (!module.parent) express.listen(3000);
 `,
   });
-  const { graph } = await explore(dir, { store: new Store(':memory:') });
+  const { graph } = await explore(dir, { store: await memoryStore() });
   const set = fn(graph, 'app.set');
   assert.equal(set.kind, 'method');
   assert.equal(set.exported, true, 'members of module.exports');
@@ -251,7 +266,7 @@ test('guide: offline from the README, written once by the model, then served fro
     'Shop is a tiny order service: it prices carts and saves orders to Postgres.',
   );
   const dir = tempDir({ ...SHOP, 'README.md': '# Shop\n\nShop is a tiny order service that prices carts and saves orders.\n' });
-  const store = new Store(':memory:');
+  const store = await memoryStore();
   const { graph } = await explore(dir, { store });
   await describeGraph(graph, heuristicDescriber, heuristicDescriber, { store, concurrency: 1, log: () => {} });
 
@@ -276,3 +291,34 @@ test('guide: offline from the README, written once by the model, then served fro
   await buildGuide(graph, writer, { store, log: () => {} });
   assert.equal(calls, 1, 'second build comes from the store');
 });
+
+for (const [driver, makeStore] of STORES) {
+  test(`store (${driver}): batches, upserts, duplicates and snapshot pruning`, async () => {
+    const store = await makeStore();
+    const blobs = Array.from({ length: 950 }, (_, i) => `b${i}`);
+    // Includes a duplicate blob (two files with identical content) in one write.
+    await store.putParses('ts:v1', [...blobs.map((blob) => ({ blob, data: `{"n":"${blob}"}` })), { blob: 'b1', data: '{"n":"again"}' }]);
+    const got = await store.getParses('ts:v1', [...blobs, 'missing']);
+    assert.equal(got.size, 950);
+    assert.equal(got.get('b1'), '{"n":"again"}', 'last write wins');
+    assert.equal((await store.getParses('ts:v2', blobs)).size, 0, 'other extractor versions are separate');
+
+    await store.putDescriptions([{ key: 'k1', kind: 'fn', value: { what: 'a', why: 'b' } }]);
+    await store.putDescriptions([{ key: 'k1', kind: 'fn', value: { what: 'c', why: 'd' } }, { key: 'k2', kind: 'guide', value: 'x' }]);
+    const d = await store.getDescriptions(['k1', 'k2', 'k3']);
+    assert.deepEqual(d.get('k1'), { what: 'c', why: 'd' });
+    assert.equal(d.get('k2'), 'x');
+
+    for (let i = 0; i < 7; i++) {
+      await store.recordSnapshot({ repo: '/r', scope: '', commit: `c${i}`, dirty: i % 2 === 1, tree: `t${i}`, provider: 'p', files: 1, functions: 2 }, [[`f${i}`, 'fp'], ['shared', `fp${i}`]]);
+    }
+    const all = await store.listSnapshots('/r');
+    assert.equal(all.length, 5, 'only the latest 5 snapshots are kept');
+    const last = (await store.lastSnapshot('/r', ''))!;
+    assert.equal(last.commit, 'c6');
+    assert.equal(last.dirty, false);
+    assert.deepEqual([...(await store.snapshotFunctions(last.id))].sort(), [['f6', 'fp'], ['shared', 'fp6']]);
+    assert.deepEqual(await store.stats(), { parses: 950, descriptions: 2, snapshots: 5 });
+    await store.close();
+  });
+}

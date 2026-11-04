@@ -131,5 +131,9 @@ export const ENTRY_LABEL: Record<string, string> = {
 
 /** Render `backticked` identifiers in prose as <code>. */
 export function inlineCode(text: string): (string | { code: string })[] {
-  return text.split(/(`[^`]+`)/g).map((part) => (part.startsWith('`') && part.endsWith('`') ? { code: part.slice(1, -1) } : part));
+  // Longer runs first, so `` a `b` c `` (code containing backticks) stays one span.
+  return text.split(/(``\s?[\s\S]+?\s?``|`[^`]+`)/g).map((part) => {
+    const m = part.match(/^(`+)\s?([\s\S]*?)\s?\1$/);
+    return m && part.length > 1 ? { code: m[2] } : part;
+  });
 }

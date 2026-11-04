@@ -1,0 +1,21 @@
+# CodeLens reviewing its own pull requests (and an example for other repositories:
+# replace `uses: ./` with `uses: blong8334/codeLens@main`).
+name: CodeLens review
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the base branch is needed to find the fork point
+      - uses: ./
+        with:
+          provider: heuristic # or: claude (with anthropic-api-key), openai (with openai-api-key / openai-base-url)
+          # fail-on: high
