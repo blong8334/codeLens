@@ -217,6 +217,13 @@ program
     graph = await enrich(graph, provider, { concurrency: Number(o.concurrency), log, purposes: o.purpose, store });
     await store?.close();
     graph.meta.pr = pr.info;
+    const { fetchDiscussion } = await import('./discussion.ts');
+    graph.meta.pr.discussion = await fetchDiscussion(graph, pr.root).catch((err: Error) => {
+      log(`  ! could not load the discussion (${err.message})`);
+      return undefined;
+    });
+    const d = graph.meta.pr.discussion;
+    if (d) log(`Discussion: ${d.threads.length} thread${d.threads.length === 1 ? '' : 's'} (${d.threads.filter((t) => t.fnId).length} on functions in the map), ${d.reviews.length} review${d.reviews.length === 1 ? '' : 's'}, ${d.conversation.length} comment${d.conversation.length === 1 ? '' : 's'}`);
     const report = reviewReport(graph);
     if (o.source === false) stripSource(graph);
     const name = `${pr.info.repo.replace('/', '-')}-pr${pr.info.number}`;

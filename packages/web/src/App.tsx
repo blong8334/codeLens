@@ -5,6 +5,8 @@ import { buildMap, type MapItem } from './impact.ts';
 import { buildOverview } from './overview.ts';
 import { Search, type SearchHit } from './Search.tsx';
 import { Guide } from './Guide.tsx';
+import { DiscussionProvider } from './Discussion.tsx';
+import type { PrDiscussion } from '../../cli/src/types.ts';
 import { invariantLayer } from './layers.ts';
 import { nodeTypes } from './nodes.tsx';
 import { Panel } from './Panel.tsx';
@@ -106,7 +108,26 @@ function useBudget(): [number, (n: number) => void] {
 }
 
 function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
-  const ix = useMemo(() => buildIndex(graph), [graph]);
+  // Fresh pull request discussion replaces the graph's copy and re-indexes (comment counts on cards).
+  const [version, setVersion] = useState(0);
+  const onDiscussion = useCallback(
+    (d: PrDiscussion) => {
+      if (!graph.meta.pr) return;
+      graph.meta.pr.discussion = d;
+      setVersion((v) => v + 1);
+    },
+    [graph],
+  );
+  return (
+    <DiscussionProvider graph={graph} onChange={onDiscussion}>
+      <ReviewView graph={graph} version={version} onReset={onReset} />
+    </DiscussionProvider>
+  );
+}
+
+function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: number; onReset: () => void }) {
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const ix = useMemo(() => buildIndex(graph), [graph, version]);
 
   // Deep links: ?layer=1&fn=<node id>&lod=2
   const params = new URLSearchParams(location.search);

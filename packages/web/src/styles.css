@@ -468,3 +468,33 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 0 5px; border: 1px sol
 .pr-body { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
 .pr-body-text { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 7.5em; overflow: hidden; mask-image: linear-gradient(to bottom, #000 60%, transparent); }
 .pr-body.open .pr-body-text { max-height: none; mask-image: none; }
+
+/* ---- pull request discussion ---- */
+.thread-badge { background: var(--accent-soft); color: var(--accent); font-weight: 650; }
+.gh-thread { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; background: var(--surface-2); }
+.gh-thread.is-outdated { opacity: 0.85; }
+.gh-thread-where { display: flex; gap: 6px; align-items: center; font-size: 11.5px; color: var(--muted); }
+.gh-comment { display: flex; flex-direction: column; gap: 3px; }
+.gh-comment + .gh-comment { border-top: 1px solid var(--border); padding-top: 8px; }
+.gh-comment-head { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; font-size: 12.5px; }
+.gh-comment-head a { text-decoration: none; }
+.gh-comment-body { font-size: 13px; line-height: 1.5; word-break: break-word; display: flex; flex-direction: column; gap: 6px; }
+.md-p { margin: 0; white-space: pre-wrap; }
+.md-code { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--surface); }
+.md-code pre { margin: 0; padding: 6px 8px; font-size: 12px; overflow-x: auto; }
+.md-suggestion { border-color: var(--add-fg); }
+.md-suggestion pre { background: var(--add-bg); }
+.md-code-label { font-size: 11px; font-weight: 650; padding: 3px 8px; color: var(--add-fg); border-bottom: 1px solid var(--border); }
+.compose { display: flex; flex-direction: column; gap: 6px; }
+.compose textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 64px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; padding: 8px 10px; }
+.compose textarea:focus { outline: none; border-color: var(--accent); }
+.compose-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.compose-result { font-size: 12px; }
+.compose-result.ok { color: var(--add-fg); }
+.compose-result.err { color: var(--del-fg); }
+.gh-reviews { display: flex; flex-direction: column; gap: 6px; }
+.gh-reviews-head { display: flex; justify-content: space-between; align-items: center; }
+.gh-verdicts { display: flex; flex-wrap: wrap; gap: 6px; }
+.gh-verdict { font-size: 12px; padding: 3px 9px; border-radius: 999px; text-decoration: none; background: var(--surface-2); color: var(--muted); font-weight: 600; }
+.gh-verdict.v-approved { background: var(--add-bg); color: var(--add-fg); }
+.gh-verdict.v-changes_requested { background: var(--del-bg); color: var(--del-fg); }

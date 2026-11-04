@@ -27,22 +27,53 @@ export function parsePrRef(input: string): PrRef {
   throw new Error(`not a pull request: "${input}" (expected 123, owner/repo#123, or a pull request URL)`);
 }
 
-const hasGh = (() => {
+export const hasGh = (() => {
   let cached: boolean | undefined;
-  return () => (cached ??= spawnSync('gh', ['auth', 'token'], { stdio: 'ignore' }).status === 0);
+  // CODELENS_NO_GH skips the gh CLI (tests point CODELENS_GITHUB_API at a fake server).
+  return () => (cached ??= !process.env.CODELENS_NO_GH && spawnSync('gh', ['auth', 'token'], { stdio: 'ignore' }).status === 0);
 })();
 
-/** GET a GitHub REST path through `gh` (signed-in auth, Enterprise hosts) or plain fetch. */
-export async function githubApi<T>(path: string): Promise<T> {
+const token = () => process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+/** REST root: api.github.com, or $CODELENS_GITHUB_API (GitHub Enterprise: https://host/api/v3). */
+const apiRoot = () => (process.env.CODELENS_GITHUB_API ?? 'https://api.github.com').replace(/\/+$/, '');
+const apiHeaders = () => ({ accept: 'application/vnd.github+json', 'user-agent': 'codelens', ...(token() ? { authorization: `Bearer ${token()}` } : {}) });
+
+/**
+ * GET a GitHub REST path through `gh` (signed-in auth, Enterprise hosts) or plain fetch.
+ * With `paginate`, follows every page of a list endpoint and returns one array.
+ */
+export async function githubApi<T>(path: string, opts: { paginate?: boolean } = {}): Promise<T> {
+  const sep = path.includes('?') ? '&' : '?';
   if (hasGh()) {
-    const out = await run('gh', ['api', path]);
-    return JSON.parse(out) as T;
+    if (!opts.paginate) return JSON.parse(await run('gh', ['api', path])) as T;
+    // One JSON object per line, across all pages.
+    const out = await run('gh', ['api', '--paginate', `${path}${sep}per_page=100`, '--jq', '.[] | @json']);
+    return out.split('\n').filter(Boolean).map((l) => JSON.parse(l)) as T;
   }
-  const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
-  const res = await fetch(`https://api.github.com/${path.replace(/^\//, '')}`, {
-    headers: { accept: 'application/vnd.github+json', 'user-agent': 'codelens', ...(token ? { authorization: `Bearer ${token}` } : {}) },
-  });
-  if (!res.ok) throw new Error(`GitHub ${path}: ${res.status} ${(await res.text()).slice(0, 200)}`);
+  if (!opts.paginate) return (await fetchJson(path)) as T;
+  const all: unknown[] = [];
+  for (let page = 1; page <= 20; page++) {
+    const items = (await fetchJson(`${path}${sep}per_page=100&page=${page}`)) as unknown[];
+    all.push(...items);
+    if (items.length < 100) break;
+  }
+  return all as T;
+}
+
+async function fetchJson(path: string): Promise<unknown> {
+  const res = await fetch(`${apiRoot()}/${path.replace(/^\//, '')}`, { headers: apiHeaders() });
+  if (!res.ok) throw new Error(`GitHub ${path}: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
+  return res.json();
+}
+
+/** POST / PATCH / PUT a JSON body to a GitHub REST path, as the signed-in user. */
+export const canPostToGitHub = () => hasGh() || !!token();
+
+export async function githubSend<T>(method: 'POST' | 'PATCH' | 'PUT', path: string, body: unknown): Promise<T> {
+  if (hasGh()) return JSON.parse(await run('gh', ['api', '-X', method, path, '--input', '-'], JSON.stringify(body))) as T;
+  if (!token()) throw new Error('to post to GitHub, sign in with `gh auth login` or set GITHUB_TOKEN');
+  const res = await fetch(`${apiRoot()}/${path.replace(/^\//, '')}`, { method, headers: { ...apiHeaders(), 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(`GitHub ${method} ${path}: HTTP ${res.status} ${(await res.text()).slice(0, 300)}`);
   return (await res.json()) as T;
 }
 
@@ -132,6 +163,7 @@ export async function checkoutPr(input: string, dir: string, log: (m: string) =>
       headRef: pr.head.ref,
       headRepo: pr.head.repo?.full_name,
       repo: slug,
+      headSha: pr.head.sha,
       body: (pr.body ?? '').slice(0, 4000),
       additions: pr.additions,
       deletions: pr.deletions,
@@ -163,14 +195,16 @@ async function remoteFor(root: string, slug: string): Promise<string | undefined
   return undefined;
 }
 
-function run(cmd: string, args: string[]): Promise<string> {
+function run(cmd: string, args: string[], input?: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(cmd, args, { stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
+    if (input !== undefined) child.stdin!.end(input);
     let out = '';
     let err = '';
-    child.stdout.on('data', (d) => (out += d));
-    child.stderr.on('data', (d) => (err += d));
+    child.stdout!.on("data", (d) => (out += d));
+    child.stderr!.on("data", (d) => (err += d));
     child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve(out) : reject(new Error(`${cmd} ${args.filter((a) => !a.startsWith('credential')).slice(0, 4).join(' ')} failed: ${err.trim().slice(0, 300)}`))));
+    // gh prints GitHub's error JSON on stdout and a summary ("HTTP 422") on stderr: keep both.
+    child.on('close', (code) => (code === 0 ? resolve(out) : reject(new Error(`${cmd} ${args.filter((a) => !a.startsWith('credential')).slice(0, 4).join(' ')} failed: ${`${err.trim()} ${out.trim()}`.trim().slice(0, 400)}`))));
   });
 }

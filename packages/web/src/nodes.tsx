@@ -18,6 +18,17 @@ export function StatusBadge({ status }: { status: FnNode['status'] }) {
   return <span className={`badge status-${status}`}>{status}</span>;
 }
 
+/** 💬 count of pull request threads on a function (or inside a group). */
+export function ThreadBadge({ ix, ids }: { ix: Index; ids: string[] }) {
+  const n = ids.reduce((sum, id) => sum + (ix.threadsByFn.get(id)?.length ?? 0), 0);
+  if (!n) return null;
+  return (
+    <span className="badge thread-badge" title={`${n} review thread${n > 1 ? 's' : ''}`}>
+      💬 {n}
+    </span>
+  );
+}
+
 export function SinceBadge({ fn }: { fn: FnNode }) {
   if (!fn.since) return null;
   return (
@@ -61,6 +72,7 @@ export function FocusCard({ data }: NodeProps<MapNode>) {
       <div className="fn-head">
         <span className="card-title mono">{displayName(fn)}</span>
         <span className="fn-head-badges">
+          <ThreadBadge ix={data.ix} ids={[fn.id]} />
           <SinceBadge fn={fn} />
           <EntryBadge fn={fn} />
           {(isChanged(fn) || !data.ix.explore) && <StatusBadge status={fn.status} />}
@@ -97,7 +109,7 @@ export function FocusCard({ data }: NodeProps<MapNode>) {
 
 // ---- a single function in a column ----
 
-export function FnCard({ data }: NodeProps<Node<{ item?: MapItem; fn?: FnNode; selected: boolean; dimmed?: boolean }>>) {
+export function FnCard({ data }: NodeProps<Node<{ item?: MapItem; fn?: FnNode; ix?: Index; selected: boolean; dimmed?: boolean }>>) {
   const fn = data.item?.fn ?? data.fn!;
   const e = fn.enrichment;
   return (
@@ -108,6 +120,7 @@ export function FnCard({ data }: NodeProps<Node<{ item?: MapItem; fn?: FnNode; s
           {displayName(fn)}
         </span>
         <span className="fn-head-badges">
+          {data.ix && <ThreadBadge ix={data.ix} ids={[fn.id]} />}
           <SinceBadge fn={fn} />
           <EntryBadge fn={fn} />
           {isChanged(fn) && <StatusBadge status={fn.status} />}
@@ -148,7 +161,10 @@ export function GroupCard({ data }: NodeProps<Node<MapData & { dimmed?: boolean 
         <span className="card-title" title={g.path ?? g.label}>
           {g.label}
         </span>
-        <span className={`badge kind-badge`}>{g.kind}</span>
+        <span className="fn-head-badges">
+          <ThreadBadge ix={ix} ids={item.fnIds} />
+          <span className={`badge kind-badge`}>{g.kind}</span>
+        </span>
       </div>
       <div className="group-meta">
         <span>

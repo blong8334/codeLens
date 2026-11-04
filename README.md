@@ -148,6 +148,22 @@ The command:
 
 It also writes the Markdown review next to the graph. Fork PRs work, because GitHub publishes every PR's head on the base repository.
 
+**The PR's discussion comes along.** Line comments are grouped into threads, and each thread is attached to the function it's about. That holds even for *outdated* comments made on an earlier push: CodeLens reads the file as it was at that commit and finds which function held the line.
+
+What you see in the canvas:
+- Cards show 💬 counts.
+- A function's panel shows its threads (Markdown rendered, suggested changes included), with **Reply** and **Comment on this function**.
+- The PR panel shows each reviewer's current verdict, general comments, and a review box with **Comment**, **Approve**, and **Request changes**.
+
+Posting goes through the local `codelens view` server as your `gh` login (or `GITHUB_TOKEN`). A comment lands on the function's first changed line, or on the PR conversation (linked to the function) when the function isn't part of the diff. While the page is open, the discussion refreshes from GitHub every minute, and the graph file is updated so the next open starts current.
+
+Any website can send requests to `localhost`, so the server guards itself:
+- writes need a per-session token embedded only in the CodeLens page;
+- every API call must name the server as its host, which blocks DNS rebinding;
+- other origins are refused.
+
+GitHub Enterprise: set `CODELENS_GITHUB_API=https://github.example.com/api/v3` when not using `gh`.
+
 Auth: it uses your `gh` login when you're signed in (private repos and GitHub Enterprise), else `GITHUB_TOKEN`; public repos need neither.
 
 ### GitHub Action

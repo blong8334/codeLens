@@ -147,10 +147,54 @@ export interface PullRequestInfo {
   /** `owner/repo` the head branch lives in (differs from `repo` for forks). */
   headRepo?: string;
   repo: string;
+  /** The commit reviewed; comments and reviews are posted against it. */
+  headSha: string;
   body: string;
+  /** Threads, reviews and conversation, as of `discussion.fetchedAt`. */
+  discussion?: PrDiscussion;
   additions?: number;
   deletions?: number;
   changedFiles?: number;
+}
+
+export interface PrComment {
+  id: number;
+  author: string;
+  body: string;
+  createdAt: string;
+  url: string;
+}
+
+/** A line-comment thread: the first comment and its replies. */
+export interface PrThread {
+  /** Id of the first comment (replies go to it). */
+  id: number;
+  path: string;
+  /** Line in the reviewed head, or null when the code has changed since (outdated). */
+  line: number | null;
+  originalLine: number | null;
+  side: 'LEFT' | 'RIGHT';
+  outdated: boolean;
+  /** The function the thread is about, when it could be located. */
+  fnId?: string;
+  comments: PrComment[];
+}
+
+export interface PrReview {
+  id: number;
+  author: string;
+  state: 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED' | 'DISMISSED' | 'PENDING';
+  body: string;
+  submittedAt: string;
+  url: string;
+}
+
+export interface PrDiscussion {
+  fetchedAt: string;
+  threads: PrThread[];
+  reviews: PrReview[];
+  /** General pull request comments. */
+  conversation: PrComment[];
 }
 
 // ---- Explore mode ----

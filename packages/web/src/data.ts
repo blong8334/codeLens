@@ -1,4 +1,4 @@
-import type { CallEdge, CodeGraph, FnNode, Group, Hotspot, Invariant, Sink } from '../../cli/src/types.ts';
+import type { CallEdge, CodeGraph, FnNode, Group, Hotspot, Invariant, PrThread, Sink } from '../../cli/src/types.ts';
 
 export type { CallEdge, CodeGraph, FnNode, Group, Hotspot, Invariant, Sink };
 
@@ -46,6 +46,8 @@ export interface Index {
   /** Steppable entry points: everything but tests, unless tests are all there is. */
   tour: string[];
   hotspots: Map<string, Hotspot>;
+  /** Pull request review threads by the function they are on. */
+  threadsByFn: Map<string, PrThread[]>;
 }
 
 export function buildIndex(graph: CodeGraph): Index {
@@ -78,7 +80,14 @@ export function buildIndex(graph: CodeGraph): Index {
     explore: graph.meta.mode === 'explore',
     tour: tourOf(graph, fns),
     hotspots: new Map((graph.explore?.hotspots ?? []).map((h) => [h.id, h])),
+    threadsByFn: threadsByFn(graph),
   };
+}
+
+function threadsByFn(graph: CodeGraph): Map<string, PrThread[]> {
+  const out = new Map<string, PrThread[]>();
+  for (const t of graph.meta.pr?.discussion?.threads ?? []) if (t.fnId) push(out, t.fnId, t);
+  return out;
 }
 
 function tourOf(graph: CodeGraph, fns: Map<string, FnNode>): string[] {

@@ -3,6 +3,7 @@ import { displayName, ENTRY_LABEL, inlineCode, isChanged, type FnNode, type Grou
 import { EntryBadge, RiskBar, SinceBadge, StatusBadge } from './nodes.tsx';
 import { DiffBlock } from './DiffView.tsx';
 import { codeLinks } from './links.ts';
+import { FunctionDiscussion, OtherDiscussion, ReviewBox, ReviewsSummary, useDiscussion } from './Discussion.tsx';
 
 interface Props {
   ix: Index;
@@ -299,7 +300,31 @@ function PullRequestCard({ ix }: { ix: Index }) {
           Files changed
         </a>
       </div>
+      <ReviewsSummary />
+      <ReviewBox />
+      <PrConversation ix={ix} />
     </div>
+  );
+}
+
+function PrConversation({ ix }: { ix: Index }) {
+  const { discussion } = useDiscussion();
+  if (!discussion) return null;
+  const placed = new Set(discussion.threads.filter((t) => t.fnId && ix.fns.has(t.fnId)).map((t) => t.id));
+  const others = discussion.conversation.length + discussion.threads.length - placed.size;
+  return (
+    <>
+      {placed.size > 0 && (
+        <p className="muted small">
+          {placed.size} review thread{placed.size > 1 ? 's are' : ' is'} on functions in the map (💬 on the cards).
+        </p>
+      )}
+      {others > 0 && (
+        <Section title="Conversation" count={others} defaultOpen={false}>
+          <OtherDiscussion placed={placed} />
+        </Section>
+      )}
+    </>
   );
 }
 
@@ -381,6 +406,11 @@ function FnPanel({ ix, fn, focus, onSelect, onFocus, onLayer }: Props & { fn: Fn
         </div>
       )}
 
+      {ix.graph.meta.pr && (
+        <Section title="Review discussion" count={ix.threadsByFn.get(fn.id)?.length ?? 0} defaultOpen>
+          <FunctionDiscussion fn={fn} threads={ix.threadsByFn.get(fn.id) ?? []} />
+        </Section>
+      )}
       {e && (
         <>
           <Section title="This change">
