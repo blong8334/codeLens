@@ -291,6 +291,13 @@ The test suite fails if a registered language has no fixture case. Any grammar b
 5. fields named after their class (`payments.charge()` → `Payments.charge`)
 6. a globally unique name, as a last resort. This step never applies to method names every standard library has (`get`, `push`, `close`, …), because `map.get()` is far likelier than your one `get` method.
 
+**TypeScript and JavaScript get type information on top.** The TypeScript compiler's checker resolves each call before name matching runs:
+- **a function in the repo** → an exact edge (`typed`), even across `tsconfig` path aliases, `new Foo()` constructors, and dynamic `import()`;
+- **a library or the standard library** (`map.get()`, `fs.readFile()`) → no edge, but the call still feeds effect detection;
+- **unknown** (`any`, untyped JavaScript, an interface with several implementations) → falls back to the name-based rules above.
+
+Reviews type-check the reviewed commit, not your working tree. On CodeLens itself, the checker resolves about 93% of calls: 930 into the repo and 3,193 to libraries, out of 4,452. It takes under a second. `--no-types` turns it off. Calls from tests and example apps don't count against a function being public API.
+
 Calls outside any named function belong to a per-file **top level** pseudo-function. Examples are CLI wiring, `app.post('/x', …)` route registration, `test(...)` blocks, and `if __name__ == "__main__"`. In scripts, servers, and `bin/` files it counts as an entry point.
 
 Low-confidence matches are marked as such. Calls to a function deleted in the diff become **dangling** edges. Graphology runs a reverse BFS outward from each change to compute caller depth and the transitive caller count.
@@ -322,7 +329,7 @@ scripts/                demo repo generator
 
 ## Known limits (MVP)
 
-- Call resolution is name-based, not type-based. Dynamic dispatch, interfaces with many implementations, and same-named methods across classes can be missed; these show as dotted "inferred" edges or are omitted. Precise resolution would need language servers or compilers.
+- Call resolution is type-aware for TypeScript and JavaScript, and name-based for other languages. Dynamic dispatch, interfaces with many implementations, and same-named methods across classes can be missed there; these show as dotted "inferred" edges or are omitted. The next step is language servers for the other languages.
 - Visibility for C#, Swift, and Kotlin is approximated by directory, since namespaces and modules can span directories.
 - Renamed functions appear as one deletion plus one addition.
 - Member calls (`obj.method()`) only resolve to methods, or to functions reached through a namespace import, so the tool never guesses across unrelated objects. Unresolved member calls feed sink detection instead.

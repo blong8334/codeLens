@@ -101,9 +101,10 @@ program
   .option('--store <file>', `SQLite file or postgres:// URL for parses and descriptions (default: ${defaultStorePath()})`)
   .option('--no-store', 'do not read or write the store')
   .option('--no-source', 'leave source code and diffs out of the written graph (structure and descriptions only)')
+  .option('--no-types', 'skip the TypeScript checker (name matching only)')
   .action(async (repo: string, o) => {
     const store = await openStore(o);
-    let graph = await inspect(here(repo), { base: o.base, head: o.head, maxDepth: Number(o.depth), full: !!o.full, store, log });
+    let graph = await inspect(here(repo), { base: o.base, head: o.head, maxDepth: Number(o.depth), full: !!o.full, store, types: o.types, log });
     if (o.enrich) {
       const provider = await providerFor(o.enrich === true ? 'heuristic' : o.enrich, o.model, o.baseUrl);
       log(`Enriching with ${provider.name}…`);
@@ -158,6 +159,7 @@ program
   .option('--store <file>', `SQLite file or postgres:// URL (default: ${defaultStorePath()})`)
   .option('--no-store', 'do not read or write the store')
   .option('--no-source', 'leave source code and diffs out of the written graph')
+  .option('--no-types', 'skip the TypeScript checker (name matching only)')
   .action(async (repo: string, o) => {
     const { reviewBase } = await import('./git.ts');
     const { reviewMarkdown, reviewReport } = await import('./review.ts');
@@ -166,7 +168,7 @@ program
     const { base, label } = await reviewBase(root, o.base, o.head);
     log(`Reviewing ${o.head === WORKING_TREE ? 'the working tree' : o.head} against ${label}`);
     const store = await openStore(o);
-    let graph = await inspect(root, { base, head: o.head, maxDepth: Number(o.depth), full: false, store, log });
+    let graph = await inspect(root, { base, head: o.head, maxDepth: Number(o.depth), full: false, store, types: o.types, log });
     const provider = await providerFor(o.provider, o.model, o.baseUrl);
     log(`Enriching with ${provider.name}…`);
     graph = await enrich(graph, provider, { concurrency: Number(o.concurrency), log, purposes: o.purpose, store });
@@ -206,12 +208,13 @@ program
   .option('--store <file>', `SQLite file or postgres:// URL (default: ${defaultStorePath()})`)
   .option('--no-store', 'do not read or write the store')
   .option('--no-source', 'leave source code and diffs out of the written graph')
+  .option('--no-types', 'skip the TypeScript checker (name matching only)')
   .action(async (prArg: string, repo: string, o) => {
     const { checkoutPr } = await import('./github.ts');
     const { reviewMarkdown, reviewReport } = await import('./review.ts');
     const pr = await checkoutPr(prArg, here(repo), log);
     const store = await openStore(o);
-    let graph = await inspect(pr.root, { base: pr.base, head: pr.head, maxDepth: Number(o.depth), full: false, store, log });
+    let graph = await inspect(pr.root, { base: pr.base, head: pr.head, maxDepth: Number(o.depth), full: false, store, types: o.types, log });
     const provider = await providerFor(o.provider, o.model, o.baseUrl);
     log(`Enriching with ${provider.name}…`);
     graph = await enrich(graph, provider, { concurrency: Number(o.concurrency), log, purposes: o.purpose, store });
@@ -251,9 +254,10 @@ program
   .option('--store <file>', `SQLite file or postgres:// URL for parses, descriptions and snapshots (default: ${defaultStorePath()})`)
   .option('--no-store', 'do not read or write the store')
   .option('--no-source', 'leave source code and diffs out of the written graph (structure and descriptions only)')
+  .option('--no-types', 'skip the TypeScript checker (name matching only)')
   .action(async (path: string, o) => {
     const store = await openStore(o);
-    const { graph, record } = await explore(here(path), { ref: o.ref, store, scopeOnly: !!o.scopeOnly, log });
+    const { graph, record } = await explore(here(path), { ref: o.ref, store, scopeOnly: !!o.scopeOnly, types: o.types, log });
     const provider = await providerFor(o.provider, o.model, o.baseUrl);
     log(`Describing with ${provider.name}…`);
     const { described, cached } = await describeGraph(graph, provider, heuristicProvider, { store, concurrency: Number(o.concurrency), log });

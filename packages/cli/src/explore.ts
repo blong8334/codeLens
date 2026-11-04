@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
-import { assignGroups, countAncestors, fnId, ignoreFilter, linkCalls, logParsed, makeNode } from './build.ts';
+import { assignGroups, countAncestors, fnId, ignoreFilter, linkCalls, logParsed, makeNode, productionCallers, typeCheck } from './build.ts';
 import { loadConfig } from './config.ts';
 import { remoteInfo, WORKING_TREE } from './git.ts';
 import { detectEntry } from './hierarchy.ts';
@@ -21,6 +21,8 @@ export interface ExploreOptions {
    * but calls into the rest of the repository then show as unresolved.
    */
   scopeOnly?: boolean;
+  /** Type-aware resolution for TypeScript/JavaScript (default on). */
+  types?: boolean;
   log?: (msg: string) => void;
 }
 
@@ -67,8 +69,9 @@ export async function explore(dir: string, opts: ExploreOptions = {}): Promise<E
       if (inScope(file.path)) fingerprints.set(node.id, fn.fingerprint);
     }
   }
-  const { graph, edges, sinks } = linkCalls(nodes, files, config);
-  for (const n of nodes.values()) n.entry = detectEntry(n, decorators.get(n.id) ?? [], graph.inDegree(n.id), config);
+  const typed = opts.types === false ? undefined : await typeCheck(snapshot, files, nodes, log);
+  const { graph, edges, sinks } = linkCalls(nodes, files, config, typed);
+  for (const n of nodes.values()) n.entry = detectEntry(n, decorators.get(n.id) ?? [], productionCallers(graph, n.id), config);
 
   // ---- keep the scope, plus one hop of context on either side ----
   const keep = new Set([...nodes.values()].filter((n) => inScope(n.file)).map((n) => n.id));
