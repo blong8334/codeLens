@@ -56,7 +56,15 @@ npm run explore -- ~/code/some-repo --ref v2.1.0 --open
 npm run codelens -- history
 ```
 
-The canvas opens on the **overview**: the package's systems or modules, connected by call volume, with the databases, network, queues and filesystems they touch. Use **Detail** to switch between System, Module, and File; double-click a part to open it in place, or a function to center on it. **Tests** toggles test code. The side panel lists:
+It opens on the **guide**, a landing page for the package:
+- **What it is**: a few sentences on what the package does, and **how it's organized**. These come from the README and the code (with `-p claude-code` or `-p claude`, one request per explore, kept in the store), or offline from the README's opening paragraph and the part summaries.
+- **Start here**: a suggested reading order, each step with why to start there. Click one to open the map centered on it.
+- **The parts**: systems, modules, or files with their summaries.
+- **Also on the page**: key functions, ways in, external effects, and what changed since your last look.
+
+Switch between **Guide** and **Map** in the header (`g` / `m`). Links with `?fn=…` or `?view=map` open straight on the map.
+
+The map opens on the **overview**: the package's systems or modules, connected by call volume, with the databases, network, queues and filesystems they touch. Use **Detail** to switch between System, Module, and File; double-click a part to open it in place, or a function to center on it. **Tests** toggles test code. The side panel lists:
 - **Start reading here**: entry points (mains, routes, CLI commands, jobs, public API). `←` / `→` steps through them.
 - **Hotspots**: the functions that hold the package together. They are ranked by callers, callees, how many modules they connect, and how much of the code reaches them.
 - **Talks to**: external effects.

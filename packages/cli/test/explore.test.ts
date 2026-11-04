@@ -185,3 +185,94 @@ test('explore: works on a plain directory without git', async () => {
   assert.equal(top.entry?.kind, 'main', '__main__ guard');
   assert.deepEqual(fn(graph, 'run').effects, ['sink:process']);
 });
+
+test('explore: CommonJS / Express-style code (member-assigned methods, module.exports, listen)', async () => {
+  const dir = tempDir({
+    'lib/application.js': `var app = exports = module.exports = {};
+
+app.init = function init() {
+  this.set('x-powered-by', true);
+};
+
+app.set = function set(key, value) {
+  this.settings[key] = value;
+  return this;
+};
+`,
+    'lib/response.js': `var res = Object.create(null);
+module.exports = res;
+
+res.send = function send(body) {
+  return this.end(body);
+};
+`,
+    'lib/utils.js': `function etag(body) {
+  return String(body.length);
+}
+function helper() {}
+module.exports = { etag };
+`,
+    'lib/view.js': `function View(name) {
+  this.name = name;
+}
+View.prototype.render = function render(options) {
+  return this.lookup(options);
+};
+View.prototype.lookup = function lookup(options) {
+  return options;
+};
+module.exports = View;
+`,
+    'examples/hello/index.js': `var express = require('../../lib/application');
+var res = require('../../lib/response');
+
+express.init();
+res.send('hi');
+if (!module.parent) express.listen(3000);
+`,
+  });
+  const { graph } = await explore(dir, { store: new Store(':memory:') });
+  const set = fn(graph, 'app.set');
+  assert.equal(set.kind, 'method');
+  assert.equal(set.exported, true, 'members of module.exports');
+  assert.ok(graph.edges.some((e) => e.source.endsWith('#app.init') && e.target === set.id), 'this.set() inside app.init');
+  assert.ok(graph.edges.some((e) => e.source.endsWith('#View.render') && e.target.endsWith('#View.lookup')), 'prototype methods');
+  assert.equal(fn(graph, 'etag').exported, true, 'named in module.exports = { … }');
+  assert.equal(fn(graph, 'helper').exported, false);
+  const example = graph.nodes.find((n) => n.file === 'examples/hello/index.js')!;
+  assert.equal(example.entry?.kind, 'main', 'module.parent guard / listen');
+  assert.ok(graph.edges.some((e) => e.source === example.id && e.target.endsWith('#res.send')), 'res.send() through the receiver name');
+});
+
+test('guide: offline from the README, written once by the model, then served from the store', async () => {
+  const { buildGuide, readmeIntro } = await import('../src/guide.ts');
+  assert.equal(
+    readmeIntro('# Shop\n\n[![build](https://x/badge.svg)](https://x)\n\n```sh\nnpm i\n```\n\nShop is a tiny **order service**: it prices carts and saves orders to [Postgres](https://pg).\n'),
+    'Shop is a tiny order service: it prices carts and saves orders to Postgres.',
+  );
+  const dir = tempDir({ ...SHOP, 'README.md': '# Shop\n\nShop is a tiny order service that prices carts and saves orders.\n' });
+  const store = new Store(':memory:');
+  const { graph } = await explore(dir, { store });
+  await describeGraph(graph, heuristicDescriber, heuristicDescriber, { store, concurrency: 1, log: () => {} });
+
+  const offline = await buildGuide(graph, heuristicDescriber, { store, log: () => {} });
+  assert.equal(offline.source, 'readme');
+  assert.match(offline.summary, /tiny order service/);
+  assert.ok(offline.startHere.length > 0 && offline.startHere.every((s) => graph.nodes.some((n) => n.id === s.id)));
+
+  let calls = 0;
+  const writer: Describer = {
+    ...heuristicDescriber,
+    name: 'writer',
+    async describeGuide(input) {
+      calls++;
+      const place = input.candidates.find((c) => c.node.name === 'placeOrder')!;
+      return { summary: 'An order service.', architecture: ['orders prices and saves'], startHere: [{ key: place.key, reason: 'Where orders begin.' }, { key: 'c999', reason: 'unknown ids are dropped' }] };
+    },
+  };
+  const written = await buildGuide(graph, writer, { store, log: () => {} });
+  assert.equal(written.source, 'llm');
+  assert.deepEqual(written.startHere, [{ id: fn(graph, 'placeOrder').id, reason: 'Where orders begin.' }]);
+  await buildGuide(graph, writer, { store, log: () => {} });
+  assert.equal(calls, 1, 'second build comes from the store');
+});

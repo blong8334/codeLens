@@ -10,6 +10,7 @@ import { inspect } from './graph.ts';
 import { enrich, heuristicProvider, type EnrichmentProvider } from './enrich.ts';
 import { explore } from './explore.ts';
 import { WORKING_TREE } from './git.ts';
+import { buildGuide } from './guide.ts';
 import { describeGraph } from './purpose.ts';
 import { cacheDir, defaultStorePath, Store } from './store.ts';
 import type { CodeGraph } from './types.ts';
@@ -132,6 +133,7 @@ program
     log(`Describing with ${provider.name}…`);
     const { described, cached } = await describeGraph(graph, provider, heuristicProvider, { store, concurrency: Number(o.concurrency), log });
     if (provider.name !== 'heuristic') log(`  ${described} newly described, ${cached} from the store`);
+    graph.explore!.guide = await buildGuide(graph, provider, { store, log });
     const rec = record(provider.name);
     store?.close();
     if (rec) log(`Recorded snapshot #${rec.id}${rec.commit ? ` (${rec.commit.slice(0, 7)}${rec.dirty ? ' + uncommitted changes' : ''})` : ''}`);

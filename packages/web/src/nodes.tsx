@@ -1,6 +1,7 @@
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import { displayName, ENTRY_LABEL, isChanged, riskLevel, type FnNode, type Index, type Invariant } from './data.ts';
 import type { MapItem } from './impact.ts';
+import { codeLinks } from './links.ts';
 
 export function RiskBar({ value, label = true }: { value: number; label?: boolean }) {
   return (
@@ -65,9 +66,17 @@ export function FocusCard({ data }: NodeProps<MapNode>) {
           {(isChanged(fn) || !data.ix.explore) && <StatusBadge status={fn.status} />}
         </span>
       </div>
-      <div className="card-path">
-        {fn.file}:{fn.range.startLine}
-      </div>
+      {(() => {
+        const link = codeLinks(data.ix.graph, fn.file, fn.qualifiedName === '(top level)' ? undefined : fn.range).web;
+        const text = `${fn.file}:${fn.range.startLine}`;
+        return link ? (
+          <a className="card-path card-link nodrag" href={link} target="_blank" rel="noreferrer" title="Open the code" onClick={(e) => e.stopPropagation()}>
+            {text} ↗
+          </a>
+        ) : (
+          <div className="card-path">{text}</div>
+        );
+      })()}
       {fn.purpose && (
         <div className="purpose">
           <div className="purpose-what">{fn.purpose.what}</div>

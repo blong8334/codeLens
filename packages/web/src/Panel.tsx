@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { displayName, ENTRY_LABEL, inlineCode, isChanged, type FnNode, type Group, type Index, type Layer, type Selection } from './data.ts';
 import { EntryBadge, RiskBar, SinceBadge, StatusBadge } from './nodes.tsx';
 import { DiffBlock } from './DiffView.tsx';
+import { codeLinks } from './links.ts';
 
 interface Props {
   ix: Index;
@@ -199,6 +200,45 @@ function ExplorePanel({ ix, onSelect, onFocus }: Props) {
   );
 }
 
+/** "View on GitHub" / "Open in VS Code" for a function's lines or a whole file. */
+function CodeLinksRow({ ix, file, fn }: { ix: Index; file: string; fn?: FnNode }) {
+  const whole = !fn || fn.qualifiedName === '(top level)';
+  const links = codeLinks(ix.graph, file, whole ? undefined : fn!.range);
+  const dirty = ix.graph.explore?.snapshot.dirty;
+  return (
+    <div className="code-links">
+      {links.web && (
+        <a className="btn btn-small" href={links.web} target="_blank" rel="noreferrer" title={dirty ? 'At the last commit; uncommitted edits may shift lines' : undefined}>
+          ↗ {links.webLabel}
+        </a>
+      )}
+      <a className="btn btn-small" href={links.editor} title={`${ix.graph.meta.repo}/${file}`}>
+        Open in VS Code
+      </a>
+    </div>
+  );
+}
+
+/** A function's source with its real line numbers. */
+function SourceBlock({ fn }: { fn: FnNode }) {
+  const top = fn.qualifiedName === '(top level)';
+  const lines = fn.source.split('\n');
+  return (
+    <div className="diff-scroll source-scroll">
+      <table className="diff mono">
+        <tbody>
+          {lines.map((line, i) => (
+            <tr key={i} className="diff-ctx">
+              {!top && <td className="ln">{fn.range.startLine + i}</td>}
+              <td className="code">{line || ' '}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function PurposeBlock({ fn }: { fn: FnNode }) {
   if (!fn.purpose) return null;
   const src = fn.purpose.source === 'llm' ? 'AI summary' : fn.purpose.source === 'doc' ? 'from doc comment' : 'inferred from code';
@@ -285,6 +325,7 @@ function FnPanel({ ix, fn, focus, onSelect, onFocus, onLayer }: Props & { fn: Fn
         {e?.contract.breaking && <span className="badge status-deleted">breaking</span>}
       </div>
       <PurposeBlock fn={fn} />
+      <CodeLinksRow ix={ix} file={fn.file} fn={fn} />
       {fn.id !== focus && (
         <div className="drill-row drill-row-top">
           <button className="btn btn-primary" onClick={() => onFocus(fn.id)}>
@@ -343,6 +384,9 @@ function FnPanel({ ix, fn, focus, onSelect, onFocus, onLayer }: Props & { fn: Fn
           {fn.depth ? `Unchanged · ${fn.depth} hop${fn.depth > 1 ? 's' : ''} upstream of a change.` : fn.downDepth ? `Unchanged · ${fn.downDepth} hop${fn.downDepth > 1 ? 's' : ''} downstream of a change.` : 'Unchanged.'}
         </p>
       )}
+      <Section title={fn.qualifiedName === '(top level)' ? 'Source (top-level statements)' : `Source · lines ${fn.range.startLine}–${fn.range.endLine}`}>
+        <SourceBlock fn={fn} />
+      </Section>
       {fn.effects.length > 0 && (
         <Section title="External effects" count={fn.effects.length}>
           {fn.effects.map((id) => (
@@ -413,6 +457,7 @@ function GroupPanel({ ix, group: g, expandedGroups, onSelect, onFocus, onToggleG
         {changed.length > 0 && <span className="badge status-modified">{changed.length} changed</span>}
       </div>
       {g.summary && <p className="summary">{g.summary}</p>}
+      {g.kind === 'file' && g.path && <CodeLinksRow ix={ix} file={g.path} />}
       {changed.length > 0 && <RiskBar value={risk} />}
       <div className="drill-row drill-row-top">
         {g.kind !== 'file' || fns.length > 1 ? (

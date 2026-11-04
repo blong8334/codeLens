@@ -5,7 +5,7 @@ import { realpath } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
 import { assignGroups, countAncestors, fnId, ignoreFilter, linkCalls, logParsed, makeNode } from './build.ts';
 import { loadConfig } from './config.ts';
-import { WORKING_TREE } from './git.ts';
+import { remoteInfo, WORKING_TREE } from './git.ts';
 import { detectEntry } from './hierarchy.ts';
 import { loadFiles } from './parse.ts';
 import { openSnapshot } from './source.ts';
@@ -30,6 +30,7 @@ export interface ExploreResult {
   record(provider: string): SnapshotRecord | undefined;
 }
 
+const README = /^readme(\.(md|markdown|rst|txt))?$/i;
 const ENTRY_ORDER: EntryKind[] = ['main', 'route', 'cli', 'job', 'config', 'public-api', 'test'];
 const MAX_HOTSPOTS = 25;
 
@@ -80,6 +81,10 @@ export async function explore(dir: string, opts: ExploreOptions = {}): Promise<E
   const keptEdges = [...edges.values()].filter((e) => keep.has(e.source) && keep.has(e.target));
   const allPaths = snapshot.files.map((f) => f.path);
   const byPath = new Map(snapshot.files.map((f) => [f.path, f]));
+  // The package's own README, else the repository's.
+  const readmeFile = [scope, ''].map((dir) => snapshot.files.find((f) => README.test(dir ? f.path.slice(dir.length + 1) : f.path) && (!dir || f.path.startsWith(`${dir}/`)))).find(Boolean);
+  const readmeText = readmeFile ? await snapshot.read(readmeFile) : null;
+  const readme = readmeFile && readmeText ? { path: readmeFile.path, text: readmeText.slice(0, 6000) } : undefined;
   const groups = await assignGroups(kept, allPaths, async (p) => (byPath.has(p) ? snapshot.read(byPath.get(p)!) : null), config);
   snapshot.close();
 
@@ -120,21 +125,31 @@ export async function explore(dir: string, opts: ExploreOptions = {}): Promise<E
   const prev = opts.store?.lastSnapshot(snapshot.root, scope);
   let since: NonNullable<CodeGraph['explore']>['since'];
   if (prev && opts.store) {
+    const identical = prev.tree === treeHash;
     const before = opts.store.snapshotFunctions(prev.id);
+    // Match by content as well as id, so a function that was only renamed or moved — or renamed
+    // by a newer CodeLens parsing the same code differently — is not reported as new.
+    const beforeContent = new Set(before.values());
+    const nowContent = new Set(fingerprints.values());
     let added = 0;
     let changed = 0;
-    for (const n of scoped) {
-      const fp = before.get(n.id);
-      if (fp === undefined) {
-        n.since = 'new';
-        added++;
-      } else if (fp !== fingerprints.get(n.id)) {
-        n.since = 'changed';
-        changed++;
+    let removed = 0;
+    if (!identical) {
+      for (const n of scoped) {
+        const fp = fingerprints.get(n.id)!;
+        const was = before.get(n.id);
+        if (was === undefined) {
+          if (beforeContent.has(fp)) continue;
+          n.since = 'new';
+          added++;
+        } else if (was !== fp) {
+          n.since = 'changed';
+          changed++;
+        }
       }
+      for (const [id, fp] of before) if (!fingerprints.has(id) && !nowContent.has(fp)) removed++;
     }
-    const removed = [...before.keys()].filter((id) => !fingerprints.has(id)).length;
-    since = { commit: prev.commit, at: prev.createdAt, added, changed, removed, identical: prev.tree === treeHash };
+    since = { commit: prev.commit, at: prev.createdAt, added, changed, removed, identical };
     const ago = prev.commit ? `${prev.commit.slice(0, 7)}${prev.dirty ? '+changes' : ''}` : prev.createdAt.slice(0, 16).replace('T', ' ');
     log(since.identical ? `Unchanged since your last explore (${ago})` : `Since your last explore (${ago}): ${added} new, ${changed} changed, ${removed} removed functions`);
   }
@@ -152,13 +167,14 @@ export async function explore(dir: string, opts: ExploreOptions = {}): Promise<E
       head: snapshot.ref === WORKING_TREE ? WORKING_TREE : snapshot.ref,
       generatedAt: new Date().toISOString(),
       config: configPath,
+      remote: snapshot.isGit ? await remoteInfo(snapshot.root, snapshot.commit) : undefined,
       stats: { filesParsed: files.size, functions: scoped.length, changedFunctions: 0, impactedFunctions: 0 },
     },
     nodes: kept,
     edges: keptEdges,
     groups,
     sinks: [...sinks.sinks.values()].filter((s) => used.has(s.id)),
-    explore: { entries, hotspots, snapshot: { commit: snapshot.commit, dirty: snapshot.dirty }, since },
+    explore: { entries, hotspots, snapshot: { commit: snapshot.commit, dirty: snapshot.dirty }, readme, since },
   };
 
   return {

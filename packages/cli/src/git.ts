@@ -68,3 +68,41 @@ export class Repo {
     return changes;
   }
 }
+
+export interface RemoteInfo {
+  /** Browsable https URL of the repository, without credentials or `.git`. */
+  web: string;
+  host: 'github' | 'gitlab' | 'bitbucket' | 'other';
+  /** Full commit id that code links point at. */
+  commit: string;
+}
+
+/**
+ * Where the code can be browsed online: `origin` (or the first remote), normalized from
+ * ssh/https forms to a web URL. Undefined for repositories with no remote.
+ */
+export async function remoteInfo(root: string, commit: string | null): Promise<RemoteInfo | undefined> {
+  if (!commit) return undefined;
+  const git = simpleGit(root);
+  try {
+    const remotes = (await git.raw(['remote'])).split('\n').filter(Boolean);
+    const name = remotes.includes('origin') ? 'origin' : remotes[0];
+    if (!name) return undefined;
+    const web = webUrl((await git.raw(['remote', 'get-url', name])).trim());
+    if (!web) return undefined;
+    const hostname = new URL(web).hostname;
+    const host = /github/.test(hostname) ? 'github' : /gitlab/.test(hostname) ? 'gitlab' : /bitbucket/.test(hostname) ? 'bitbucket' : 'other';
+    return { web, host, commit };
+  } catch {
+    return undefined;
+  }
+}
+
+/** `git@github.com:o/r.git`, `ssh://git@host/o/r`, `https://token@host/o/r.git` → `https://host/o/r`. */
+export function webUrl(remote: string): string | undefined {
+  let m = remote.match(/^[\w.-]+@([^:/]+):(.+?)(\.git)?\/?$/);
+  if (m) return `https://${m[1]}/${m[2]}`;
+  m = remote.match(/^(?:ssh|git|https?):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+?)(\.git)?\/?$/);
+  if (m) return `https://${m[1]}/${m[2]}`;
+  return undefined;
+}

@@ -15,8 +15,14 @@ function jsQuery(dialect: 'js' | 'ts'): string {
 (variable_declarator name: (identifier) @fn.name value: VALUE)
 (pair key: (_) @fn.name value: VALUE)
 ${field}
-(assignment_expression left: (member_expression property: (property_identifier) @fn.name) right: VALUE)
 (assignment_expression left: (identifier) @fn.name right: VALUE)
+; CommonJS exports stay plain functions: exports.x = …, module.exports.x = …
+((assignment_expression left: (member_expression object: (identifier) @_o property: (property_identifier) @fn.name) right: VALUE) (#match? @_o "^(exports|module)$"))
+((assignment_expression left: (member_expression object: (member_expression object: (identifier) @_m property: (property_identifier) @_e) property: (property_identifier) @fn.name) right: VALUE) (#eq? @_m "module") (#eq? @_e "exports"))
+; obj.method = function …  and  Ctor.prototype.method = function …  are methods of obj / Ctor
+((assignment_expression left: (member_expression object: (identifier) @fn.scope property: (property_identifier) @fn.name) right: VALUE) (#not-match? @fn.scope "^(exports|module)$"))
+((assignment_expression left: (member_expression object: (member_expression object: (identifier) @fn.scope property: (property_identifier) @_p) property: (property_identifier) @fn.name) right: VALUE) (#eq? @_p "prototype"))
+(assignment_expression left: (member_expression object: (this) property: (property_identifier) @fn.name) right: VALUE)
 
 (class_declaration name: (_) @scope.name) @scope
 (class name: (_) @scope.name) @scope
@@ -65,14 +71,40 @@ function jsParams(fn: SyntaxNode): Param[] {
   return out;
 }
 
-function jsExported(fn: SyntaxNode): boolean {
+const CJS = /\bmodule\.exports\b|\bexports\.\w+\s*=/;
+const cjsNames = new WeakMap<object, Set<string> | null>();
+
+/** Names a CommonJS module exports (`module.exports = x`, `= { a, b }`, `exports.y = z`), or null if it is not CommonJS. */
+function commonJsExports(fn: SyntaxNode): Set<string> | null {
+  const tree = fn.tree;
+  if (cjsNames.has(tree)) return cjsNames.get(tree)!;
+  const text = tree.rootNode.text;
+  let names: Set<string> | null = null;
+  if (CJS.test(text)) {
+    names = new Set();
+    for (const m of text.matchAll(/module\.exports\s*=\s*(\w+)\s*[;\n]/g)) names.add(m[1]);
+    for (const m of text.matchAll(/module\.exports\s*=\s*\{([^}]*)\}/g)) for (const n of m[1].matchAll(/(\w+)\s*(?:,|$|\n)|:\s*(\w+)/g)) names.add(n[2] ?? n[1]);
+    for (const m of text.matchAll(/exports\.\w+\s*=\s*(\w+)\s*[;\n]/g)) names.add(m[1]);
+  }
+  cjsNames.set(tree, names);
+  return names;
+}
+
+function jsExported(fn: SyntaxNode, name: string): boolean {
   for (let n: SyntaxNode | null = fn; n; n = n.parent) {
     if (n.type === 'export_statement') return true;
-    if (n.type === 'program') return false;
+    if (n.type === 'program') break;
     // Methods of exported classes count as exported surface; locals inside blocks do not.
     if (n.type === 'statement_block' && n !== fn) return false;
   }
-  return false;
+  const cjs = commonJsExports(fn);
+  if (!cjs) return false;
+  // CommonJS: `exports.x = …`, members hung off exported objects (`app.use = …`,
+  // `Foo.prototype.bar = …`), and functions named in a `module.exports` assignment.
+  const assign = fn.parent?.type === 'assignment_expression' ? fn.parent : null;
+  if (assign?.childForFieldName('left')?.type === 'member_expression') return true;
+  const decl = fn.type === 'function_declaration' ? fn : fn.parent?.type === 'variable_declarator' ? fn.parent : null;
+  return !!decl && cjs.has(name);
 }
 
 const stripExt = (p: string) => p.replace(/\.(d\.)?[mc]?[jt]sx?$/, '');
@@ -96,8 +128,8 @@ const jsFamily = {
   },
   hooks: {
     params: jsParams,
-    exported: (fn: SyntaxNode) => jsExported(fn),
-    kind: (fn: SyntaxNode) => (fn.type === 'method_definition' ? 'method' : fn.type === 'arrow_function' ? 'arrow' : 'function') as 'method' | 'arrow' | 'function',
+    exported: (fn: SyntaxNode, { name }: { name: string }) => jsExported(fn, name),
+    kind: (fn: SyntaxNode, isMethod: boolean) => (fn.type === 'method_definition' || isMethod ? 'method' : fn.type === 'arrow_function' ? 'arrow' : 'function') as 'method' | 'arrow' | 'function',
   },
 } satisfies Partial<LanguageSpec>;
 

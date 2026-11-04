@@ -17,6 +17,10 @@ import {
   toEnrichment,
   toGroupMap,
   toPurposeMap,
+  GUIDE_SYSTEM,
+  guidePrompt,
+  GuideSchema,
+  toGuide,
 } from './prompts.ts';
 import type { NodeEnrichment } from './types.ts';
 
@@ -67,6 +71,10 @@ export function claudeProvider(opts: { model?: string; effort?: 'low' | 'medium'
 
     async describeGroups(items) {
       return toGroupMap(await structured(GroupSchema, GROUP_SYSTEM, groupPrompt(items), 'low'));
+    },
+
+    async describeGuide(input) {
+      return toGuide(await structured(GuideSchema, GUIDE_SYSTEM, guidePrompt(input)));
     },
   };
 }

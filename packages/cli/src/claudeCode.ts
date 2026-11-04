@@ -4,6 +4,10 @@ import {
   GROUP_SYSTEM,
   groupPrompt,
   GroupSchema,
+  GUIDE_SYSTEM,
+  guidePrompt,
+  GuideSchema,
+  toGuide,
   NodeSchema,
   PURPOSE_SYSTEM,
   purposePrompt,
@@ -28,6 +32,7 @@ export function claudeCodeProvider(opts: { model?: string } = {}): EnrichmentPro
   const nodeSchema = jsonSchema(NodeSchema);
   const purposeSchema = jsonSchema(PurposeSchema);
   const groupSchema = jsonSchema(GroupSchema);
+  const guideSchema = jsonSchema(GuideSchema);
 
   return {
     name: `claude-code:${model}`,
@@ -50,6 +55,11 @@ export function claudeCodeProvider(opts: { model?: string } = {}): EnrichmentPro
     async describeGroups(items) {
       const result = await runClaude({ model, system: GROUP_SYSTEM, prompt: groupPrompt(items), jsonSchema: groupSchema });
       return toGroupMap(GroupSchema.parse(result.structured_output));
+    },
+
+    async describeGuide(input) {
+      const result = await runClaude({ model, system: GUIDE_SYSTEM, prompt: guidePrompt(input), jsonSchema: guideSchema });
+      return toGuide(GuideSchema.parse(result.structured_output));
     },
   };
 }

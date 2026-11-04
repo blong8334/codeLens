@@ -1,6 +1,7 @@
 // Prompts and output schemas shared by every LLM-backed provider (Claude API, Claude Code).
 import * as z from 'zod/v4';
 import type { NodeContext } from './enrich.ts';
+import type { GuideInput } from './guide.ts';
 import type { GroupInput, PurposeInput } from './purpose.ts';
 import type { CodeGraph, FnNode, NodeEnrichment } from './types.ts';
 
@@ -128,3 +129,40 @@ export function groupPrompt(items: GroupInput[]): string {
 
 export const toPurposeMap = (out: z.infer<typeof PurposeSchema>) => new Map(out.items.map((i) => [i.id, { what: i.what, why: i.why }]));
 export const toGroupMap = (out: z.infer<typeof GroupSchema>) => new Map(out.items.map((i) => [i.id, i.summary]));
+
+// ---- the package guide (explore mode's landing page) ----
+
+export const GuideSchema = z.object({
+  summary: z.string().describe('2-4 plain sentences: what this package is, what it does, and who uses it.'),
+  architecture: z.array(z.string()).describe('3-6 short points on how the code is organized and how work flows through it, naming its parts.'),
+  startHere: z
+    .array(z.object({ id: z.string().describe('Bracketed id of a candidate function, e.g. c3.'), reason: z.string().describe('Why to read it at this point, in one sentence of at most 25 words.') }))
+    .describe('3-6 candidates, in the order a newcomer should read them.'),
+});
+
+export const GUIDE_SYSTEM = `You write the first page someone sees when they open an unfamiliar codebase.
+They want to know what it is, how it is put together, and where to start reading.
+Write plainly and concretely; no marketing language, no filler. Base every claim on the material given
+(README excerpt, the parts and their summaries, and the candidate functions with their descriptions).
+For "startHere", pick 3-6 candidates in a sensible reading order: usually the main entry or factory first,
+then the core flow, then the most-used building blocks. Use the bracketed ids exactly.`;
+
+export function guidePrompt(input: GuideInput): string {
+  return [
+    `# Package: ${input.name}`,
+    input.readme ? `## README (excerpt)\n${input.readme.slice(0, 3500)}` : '## README\n(none found)',
+    `## Parts\n${input.parts.map((p) => `- ${p.kind} "${p.label}" (${p.functions} functions): ${p.summary}`).join('\n')}`,
+    `## Candidate starting points\n${input.candidates
+      .map((c) => {
+        const name = c.node.qualifiedName === '(top level)' ? `${c.node.file} (top-level code)` : `\`${c.node.qualifiedName}\` in ${c.node.file}`;
+        return `- [${c.key}] ${name}: ${c.role}; ${c.callers} callers, ${c.callees} callees. ${c.node.purpose?.what ?? ''}`;
+      })
+      .join('\n')}`,
+  ].join('\n\n');
+}
+
+export const toGuide = (out: z.infer<typeof GuideSchema>) => ({
+  summary: out.summary,
+  architecture: out.architecture,
+  startHere: out.startHere.map((s) => ({ key: s.id, reason: s.reason })),
+});

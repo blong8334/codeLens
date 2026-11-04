@@ -1,7 +1,7 @@
 import { createPatch } from 'diff';
 import { assignGroups, countAncestors, fnId, ignoreFilter, linkCalls, logParsed, makeNode } from './build.ts';
 import { loadConfig } from './config.ts';
-import { Repo, WORKING_TREE } from './git.ts';
+import { remoteInfo, Repo, WORKING_TREE } from './git.ts';
 import { detectEntry } from './hierarchy.ts';
 import { languageFor, loadFiles, parseFile, type ExtractedFile, type ExtractedFn } from './parse.ts';
 import { openSnapshot } from './source.ts';
@@ -34,6 +34,7 @@ export async function inspect(dir: string, opts: InspectOptions): Promise<CodeGr
 
   // 1. Parse every source file at head (cached by content in the store).
   const snapshot = await openSnapshot(repo.root, head === WORKING_TREE ? WORKING_TREE : head);
+  const remote = await remoteInfo(repo.root, snapshot.commit);
   const allPaths = snapshot.files.map((f) => f.path);
   const { files: headFiles, stats: loadStats } = await loadFiles(snapshot, { include: (p) => !ignored(p), store: opts.store });
   snapshot.close();
@@ -154,6 +155,7 @@ export async function inspect(dir: string, opts: InspectOptions): Promise<CodeGr
       head,
       generatedAt: new Date().toISOString(),
       config: configPath,
+      remote,
       stats: {
         filesParsed: headFiles.size,
         functions: nodes.size,

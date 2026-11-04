@@ -113,6 +113,8 @@ export interface CodeGraph {
     base: string;
     head: string;
     generatedAt: string;
+    /** Where the code can be browsed online, for links from the canvas. */
+    remote?: { web: string; host: 'github' | 'gitlab' | 'bitbucket' | 'other'; commit: string };
     /** Config file that overrode auto-detection, if one was found. */
     config?: string;
     stats: {
@@ -131,6 +133,16 @@ export interface CodeGraph {
 }
 
 // ---- Explore mode ----
+
+export interface Guide {
+  /** A few sentences: what this package is and does. */
+  summary: string;
+  /** Short points on how it is organized and how work flows through it. */
+  architecture: string[];
+  /** Suggested reading order, each with why to start there. */
+  startHere: { id: string; reason: string }[];
+  source: 'llm' | 'readme' | 'heuristic';
+}
 
 export interface Hotspot {
   id: string;
@@ -154,6 +166,10 @@ export interface ExploreData {
     /** Store snapshot id, when the store recorded this run. */
     id?: number;
   };
+  /** The package's README (opening part), used for the guide. */
+  readme?: { path: string; text: string };
+  /** The landing page: what this is, how it is organized, where to start. */
+  guide?: Guide;
   /** Compared with the previous explore of the same scope, if there was one. */
   since?: {
     commit: string | null;

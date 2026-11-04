@@ -54,6 +54,8 @@ export class Grouper {
     const pkg = this.packageFor(path);
     if (pkg) return { name: pkg.name, auto: true };
     const segments = dirname(path).split('/').filter((s) => s && s !== '.');
+    // Everything under a top-level test root is one system, not one per test subfolder.
+    if (/^(__tests__|tests?|spec)$/.test(segments[0] ?? '')) return { name: segments[0], auto: true };
     let meaningful: string | undefined;
     for (let i = 0; i < segments.length; i++) {
       if (GENERIC_DIRS.has(segments[i]) || segments[i] === 'test' || segments[i] === 'tests') continue;
@@ -126,6 +128,9 @@ const JOB_DECORATOR = /@\w*\.?(task|shared_task|cron|schedule|scheduled_job|peri
 /** Files that are run rather than imported: CLIs, servers, scripts. */
 const SCRIPT_FILE = /(^|\/)(bin|scripts?|cmd|tools?)\/|(^|\/)(main|cli|server|app|manage|__main__|run)\.[^/]+$|\.(sh|bash)$/;
 
+/** Top-level code that runs a program or server: main guards, `app.listen(…)`. */
+const RUN_GUARD = /__name__\s*==\s*['"]__main__['"]|require\.main\s*===?\s*module|!\s*module\.parent|\.listen\(/;
+
 export function isTestFile(path: string): boolean {
   return TEST_DIR.test(path) || !!specForPath(path)?.testFile?.test(path);
 }
@@ -147,7 +152,7 @@ export function detectEntry(
   if (JOB_DECORATOR.test(deco)) return e('job', `decorated ${decorators[0]}`);
   if (fn.name === TOP_LEVEL) {
     // Top-level code runs on import; it is an entry only in files meant to be run.
-    if (SCRIPT_FILE.test(fn.file) || /__name__\s*==\s*['"]__main__['"]/.test(fn.source)) return e('main', 'top-level code of a script');
+    if (SCRIPT_FILE.test(fn.file) || RUN_GUARD.test(fn.source)) return e('main', 'top-level code of a script');
     return undefined;
   }
   if (callerCount > 0) return undefined;

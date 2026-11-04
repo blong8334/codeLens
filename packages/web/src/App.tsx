@@ -4,6 +4,7 @@ import { buildIndex, defaultOverviewLod, displayName, LAYERS, LODS, OVERVIEW, ri
 import { buildMap, type MapItem } from './impact.ts';
 import { buildOverview } from './overview.ts';
 import { Search, type SearchHit } from './Search.tsx';
+import { Guide } from './Guide.tsx';
 import { invariantLayer } from './layers.ts';
 import { nodeTypes } from './nodes.tsx';
 import { Panel } from './Panel.tsx';
@@ -113,6 +114,8 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
   const initialFocus = linked && ix.fns.has(linked) ? linked : ix.explore ? OVERVIEW : (ix.reviewOrder[0] ?? OVERVIEW);
   const tour = ix.explore ? ix.tour : ix.reviewOrder;
   const searchRef = useRef<HTMLInputElement>(null);
+  // Explore mode opens on the guide unless a link asks for a specific function or the map.
+  const [view, setView] = useState<'guide' | 'map'>(() => (ix.explore && !linked && params.get('view') !== 'map' ? 'guide' : 'map'));
 
   const [layer, setLayer] = useState<Layer>(() => (Number(params.get('layer')) || 1) as Layer);
   const [history, setHistory] = useState<string[]>([initialFocus]);
@@ -158,6 +161,7 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
   );
   const onSearch = useCallback(
     (hit: SearchHit) => {
+      setView('map');
       if (hit.kind === 'fn') return centerOn(hit.fn.id);
       // Show a group at its own level in the overview, selected.
       const level = ({ file: 1, module: 2, system: 3 } as const)[hit.group.kind];
@@ -193,11 +197,14 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === '/') {
         e.preventDefault();
         searchRef.current?.focus();
-      } else if (e.key === 'o' || e.key === 'Home') showOverview();
+      } else if (ix.explore && e.key === 'g') setView('guide');
+      else if (ix.explore && e.key === 'm') setView('map');
+      else if (view === 'guide') return;
+      else if (e.key === 'o' || e.key === 'Home') showOverview();
       else if (!ix.explore && ['1', '2', '3'].includes(e.key)) setLayer(Number(e.key) as Layer);
       else if (e.key === 'Escape') setSelection(null);
       else if (layer === 1 && (e.key === '-' || e.key === '_')) changeLod(Math.min(3, lod + 1) as Lod);
@@ -208,7 +215,7 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [layer, lod, minLod, history, changeLod, stepChange, showOverview, ix]);
+  }, [layer, lod, minLod, history, changeLod, stepChange, showOverview, ix, view]);
 
   const { meta, enrichment } = graph;
   const risk = enrichment?.overallRisk ?? 0;
@@ -238,6 +245,16 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
             </span>
           )}
         </div>
+        {ix.explore && (
+          <div className="view-switch" role="tablist" aria-label="View">
+            <button role="tab" aria-selected={view === 'guide'} className={view === 'guide' ? 'active' : ''} onClick={() => setView('guide')} title="Guide (g)">
+              Guide
+            </button>
+            <button role="tab" aria-selected={view === 'map'} className={view === 'map' ? 'active' : ''} onClick={() => setView('map')} title="Map (m)">
+              Map
+            </button>
+          </div>
+        )}
         <Search ref={searchRef} ix={ix} onPick={onSearch} />
         <div className="stats">
           {ix.explore ? (
@@ -280,6 +297,20 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
       </nav>
       )}
 
+      {ix.explore && view === 'guide' ? (
+        <Guide
+          ix={ix}
+          onStart={(id) => {
+            setView('map');
+            centerOn(id);
+          }}
+          onPart={(g) => onSearch({ kind: 'group', group: g, score: 0 })}
+          onMap={() => {
+            setView('map');
+            showOverview();
+          }}
+        />
+      ) : (
       <main className="workspace">
         <div className="stage">
           {layer === 1 && (
@@ -388,6 +419,7 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
           />
         </aside>
       </main>
+      )}
     </div>
   );
 }
