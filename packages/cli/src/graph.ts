@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createPatch } from 'diff';
 import { assignGroups, countAncestors, fnId, ignoreFilter, linkCalls, logParsed, makeNode, productionCallers, typeCheck } from './build.ts';
 import { loadConfig } from './config.ts';
@@ -149,7 +150,25 @@ export async function inspect(dir: string, opts: InspectOptions): Promise<CodeGr
 
   log(`${changedIds.length} changed functions, ${keptNodes.filter((n) => (n.depth ?? 0) > 0).length} impacted callers`);
 
+  // File-level view of the change, for "reviewed" marks (every file, code or not).
+  const diffs = await repo.fileDiffs(base, head).catch(() => []);
+  const fnsPerFile = new Map<string, number>();
+  for (const id of changedIds) fnsPerFile.set(nodes.get(id)!.file, (fnsPerFile.get(nodes.get(id)!.file) ?? 0) + 1);
+  const branch = await repo.branch();
+  // Per-function fingerprints: only the changed lines, so moving a function does not reopen it.
+  const fnPrint = (n: FnNode) =>
+    createHash('sha1')
+      .update(`${n.status}\0${(n.diff ?? n.source).split('\n').filter((l) => /^[+-]/.test(l)).join('\n') || n.source}`)
+      .digest('hex')
+      .slice(0, 16);
+  const review = {
+    key: `local:${repo.root}:${branch ?? head}`,
+    files: diffs.map((d) => ({ ...d, functions: fnsPerFile.get(d.path) ?? 0 })),
+    functions: Object.fromEntries(changedIds.map((id) => [id, fnPrint(nodes.get(id)!)])),
+  };
+
   return {
+    review,
     version: 2,
     meta: {
       mode: 'review',

@@ -48,9 +48,16 @@ export interface Index {
   hotspots: Map<string, Hotspot>;
   /** Pull request review threads by the function they are on. */
   threadsByFn: Map<string, PrThread[]>;
+  /** Files the reviewer is done with (marked, or every change in them accepted). */
+  reviewed: Set<string>;
+  /** Changed functions the reviewer accepted. */
+  accepted: Set<string>;
 }
 
-export function buildIndex(graph: CodeGraph): Index {
+/** Done reviewing this function: its change was accepted, or its whole file was. */
+export const isDone = (ix: Index, fn: FnNode) => ix.accepted.has(fn.id) || ix.reviewed.has(fn.file);
+
+export function buildIndex(graph: CodeGraph, reviewed: Set<string> = new Set(), accepted: Set<string> = new Set()): Index {
   const fns = new Map(graph.nodes.map((n) => [n.id, n]));
   const groups = new Map(graph.groups.map((g) => [g.id, g]));
   const callers = new Map<string, CallEdge[]>();
@@ -81,6 +88,8 @@ export function buildIndex(graph: CodeGraph): Index {
     tour: tourOf(graph, fns),
     hotspots: new Map((graph.explore?.hotspots ?? []).map((h) => [h.id, h])),
     threadsByFn: threadsByFn(graph),
+    reviewed,
+    accepted,
   };
 }
 

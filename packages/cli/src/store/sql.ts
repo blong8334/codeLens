@@ -52,6 +52,7 @@ create table if not exists ${this.t('snapshots')} (
   tree text not null, created_at text not null, provider text not null, files integer not null, functions integer not null
 );
 create index if not exists snapshots_by_repo on ${this.t('snapshots')} (repo, scope, id);
+create table if not exists ${this.t('review_marks')} (review text not null, reviewer text not null, path text not null, fingerprint text not null, marked_at text not null, primary key (review, reviewer, path))${noRowid};
 create table if not exists ${this.t('snapshot_fns')} (snapshot bigint not null, fn text not null, fingerprint text not null, primary key (snapshot, fn))${noRowid};
 `);
     if (this.location !== ':memory:' && !pg) await this.migrateJsonCaches(dirname(this.location));
@@ -124,6 +125,24 @@ create table if not exists ${this.t('snapshot_fns')} (snapshot bigint not null, 
       await this.db.run(`delete from ${this.t('snapshots')} where id in (${marks(part)})`, part);
     }
     return { ...rec, id, createdAt };
+  }
+
+  // ---- review marks ----
+
+  async getMarks(review: string, reviewer: string) {
+    const rows = await this.db.all(`select path, fingerprint, marked_at from ${this.t('review_marks')} where review = ? and reviewer = ?`, [review, reviewer]);
+    return new Map(rows.map((r) => [String(r.path), { fingerprint: String(r.fingerprint), markedAt: String(r.marked_at) }]));
+  }
+
+  async setMark(review: string, reviewer: string, path: string, fingerprint: string | null) {
+    if (fingerprint === null) {
+      await this.db.run(`delete from ${this.t('review_marks')} where review = ? and reviewer = ? and path = ?`, [review, reviewer, path]);
+      return;
+    }
+    await this.db.run(
+      `insert into ${this.t('review_marks')} (review, reviewer, path, fingerprint, marked_at) values (?, ?, ?, ?, ?) on conflict (review, reviewer, path) do update set fingerprint = excluded.fingerprint, marked_at = excluded.marked_at`,
+      [review, reviewer, path, fingerprint, new Date().toISOString()],
+    );
   }
 
   async listSnapshots(repo?: string) {

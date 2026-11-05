@@ -6,7 +6,7 @@ import type { PrDiscussion, PrReview, PrThread } from '../../cli/src/types.ts';
 
 const token = () => document.querySelector<HTMLMetaElement>('meta[name="codelens-token"]')?.content ?? '';
 
-async function call<T>(path: string, body?: unknown): Promise<T> {
+export async function call<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method: body === undefined ? 'GET' : 'POST',
     headers: body === undefined ? {} : { 'content-type': 'application/json', 'x-codelens-token': token() },
@@ -27,6 +27,7 @@ interface DiscussionState {
   refresh: () => Promise<void>;
   comment: (fnId: string, body: string) => Promise<string>;
   reply: (threadId: number, body: string) => Promise<string>;
+  lineComment: (path: string, line: number, side: 'LEFT' | 'RIGHT', body: string) => Promise<string>;
   review: (event: 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES', body: string) => Promise<string>;
 }
 
@@ -37,6 +38,7 @@ const Ctx = createContext<DiscussionState>({
   refresh: async () => {},
   comment: async () => '',
   reply: async () => '',
+  lineComment: async () => '',
   review: async () => '',
 });
 export const useDiscussion = () => useContext(Ctx);
@@ -94,6 +96,7 @@ export function DiscussionProvider({ graph, onChange, children }: { graph: CodeG
     refresh,
     comment: (fnId, body) => after(call('/api/pr/comment', { fnId, body })),
     reply: (threadId, body) => after(call('/api/pr/reply', { threadId, body })),
+    lineComment: (path, line, side, body) => after(call('/api/pr/line-comment', { path, line, side, body })),
     review: (event, body) => after(call('/api/pr/review', { event, body })),
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
@@ -119,7 +122,7 @@ export function Markdown({ text }: { text: string }) {
   const parts = text.split(/^```([\w-]*)[^\n]*\n([\s\S]*?)^```\s*$/m);
   const out: ReactNode[] = [];
   for (let i = 0; i < parts.length; i += 3) {
-    if (parts[i].trim()) out.push(<Inline key={i} text={parts[i].trim()} />);
+    out.push(...blocks(parts[i], `b${i}`));
     if (i + 2 < parts.length) {
       const lang = parts[i + 1];
       out.push(
@@ -133,20 +136,93 @@ export function Markdown({ text }: { text: string }) {
   return <>{out}</>;
 }
 
-function Inline({ text }: { text: string }) {
+/** Headings, lists, tables and paragraphs, as React elements. */
+function blocks(text: string, keyPrefix: string): ReactNode[] {
+  const out: ReactNode[] = [];
+  const lines = text.replace(/<!--[\s\S]*?-->/g, '').split('\n');
+  let para: string[] = [];
+  const flush = () => {
+    if (para.join('').trim()) out.push(<Inline key={`${keyPrefix}p${out.length}`} text={para.join('\n').trim()} />);
+    para = [];
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const heading = line.match(/^#{1,6}\s+(.*)$/);
+    if (heading) {
+      flush();
+      out.push(
+        <h4 key={`${keyPrefix}h${i}`} className="md-h">
+          <Inline text={heading[1]} bare />
+        </h4>,
+      );
+      continue;
+    }
+    if (/^\s*([-*+]|\d+[.)])\s+/.test(line)) {
+      flush();
+      const ordered = /^\s*\d/.test(line);
+      const items: string[] = [];
+      while (i < lines.length && /^\s*([-*+]|\d+[.)])\s+/.test(lines[i])) {
+        let item = lines[i].replace(/^\s*([-*+]|\d+[.)])\s+/, '');
+        // Continuation lines belong to the item.
+        while (i + 1 < lines.length && /^\s{2,}\S/.test(lines[i + 1]) && !/^\s*([-*+]|\d+[.)])\s+/.test(lines[i + 1])) item += ` ${lines[++i].trim()}`;
+        items.push(item);
+        i++;
+      }
+      i--;
+      const List = ordered ? 'ol' : 'ul';
+      out.push(
+        <List key={`${keyPrefix}l${i}`} className="md-list">
+          {items.map((it, k) => (
+            <li key={k}>
+              <Inline text={it.replace(/^\[( |x)\]\s*/i, (m) => (m.includes('x') || m.includes('X') ? '☑ ' : '☐ '))} bare />
+            </li>
+          ))}
+        </List>,
+      );
+      continue;
+    }
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      flush();
+      const rows: string[][] = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+        if (!/^\s*\|[\s:|-]+\|\s*$/.test(lines[i])) rows.push(lines[i].trim().slice(1, -1).split('|').map((c) => c.trim()));
+        i++;
+      }
+      i--;
+      out.push(
+        <div key={`${keyPrefix}t${i}`} className="md-table-wrap">
+          <table className="md-table">
+            <tbody>
+              {rows.map((r, ri) => (
+                <tr key={ri}>
+                  {r.map((c, ci) => (ri === 0 ? <th key={ci}><Inline text={c} bare /></th> : <td key={ci}><Inline text={c} bare /></td>))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+      continue;
+    }
+    if (!line.trim()) flush();
+    else para.push(line);
+  }
+  flush();
+  return out;
+}
+
+function Inline({ text, bare }: { text: string; bare?: boolean }) {
   // `code`, [label](https://…) and bare https:// links; everything else stays text.
   const tokens = text.split(/(`[^`\n]+`|\[[^\]\n]+\]\(https?:\/\/[^)\s]+\)|https?:\/\/[^\s)]+)/g);
-  return (
-    <p className="md-p">
-      {tokens.map((t, i) => {
-        if (t.startsWith('`') && t.endsWith('`') && t.length > 2) return <code key={i}>{t.slice(1, -1)}</code>;
-        const link = t.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
+  const content = tokens.map((t, i) => {
+    if (t.startsWith('`') && t.endsWith('`') && t.length > 2) return <code key={i}>{t.slice(1, -1)}</code>;
+    const link = t.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
         if (link) return <a key={i} href={link[2]} target="_blank" rel="noreferrer">{link[1]}</a>;
         if (/^https?:\/\//.test(t)) return <a key={i} href={t} target="_blank" rel="noreferrer">{t}</a>;
-        return t.replace(/\*\*([^*]+)\*\*/g, '$1');
-      })}
-    </p>
-  );
+        // **bold**: emphasized, never HTML.
+        return t.split(/(\*\*[^*]+\*\*)/g).map((b, k) => (b.startsWith('**') && b.endsWith('**') && b.length > 4 ? <strong key={`${i}-${k}`}>{b.slice(2, -2)}</strong> : b));
+      });
+  return bare ? <>{content}</> : <p className="md-p">{content}</p>;
 }
 
 function Comment({ author, body, createdAt, url }: { author: string; body: string; createdAt: string; url: string }) {
@@ -165,7 +241,7 @@ function Comment({ author, body, createdAt, url }: { author: string; body: strin
   );
 }
 
-function Compose({ placeholder, actions, hint }: { placeholder: string; hint?: string; actions: { label: string; primary?: boolean; run: (text: string) => Promise<string>; allowEmpty?: boolean }[] }) {
+export function Compose({ placeholder, actions, hint }: { placeholder: string; hint?: string; actions: { label: string; primary?: boolean; run: (text: string) => Promise<string>; allowEmpty?: boolean }[] }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string; url?: string } | null>(null);

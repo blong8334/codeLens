@@ -25,7 +25,7 @@ export interface SnapshotRecord {
   functions: number;
 }
 
-export type DescriptionKind = 'fn' | 'group' | 'guide';
+export type DescriptionKind = 'fn' | 'group' | 'guide' | 'change';
 
 export interface Store {
   /** Where the data lives, for messages (a file path or a redacted database URL). */
@@ -39,6 +39,10 @@ export interface Store {
   snapshotFunctions(id: number): Promise<Map<string, string>>;
   recordSnapshot(rec: Omit<SnapshotRecord, 'id' | 'createdAt'>, fns: Iterable<[string, string]>): Promise<SnapshotRecord>;
   listSnapshots(repo?: string): Promise<SnapshotRecord[]>;
+  /** A reviewer's "I'm good with this file" marks for one review: path → the diff fingerprint approved. */
+  getMarks(review: string, reviewer: string): Promise<Map<string, { fingerprint: string; markedAt: string }>>;
+  /** Mark a file reviewed at this fingerprint, or clear the mark with null. */
+  setMark(review: string, reviewer: string, path: string, fingerprint: string | null): Promise<void>;
   stats(): Promise<{ parses: number; descriptions: number; snapshots: number }>;
   close(): Promise<void>;
 }

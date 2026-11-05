@@ -10,6 +10,7 @@ import { inspect } from './graph.ts';
 import { enrich, heuristicProvider, type EnrichmentProvider } from './enrich.ts';
 import { explore } from './explore.ts';
 import { WORKING_TREE } from './git.ts';
+import { buildBrief } from './brief.ts';
 import { buildGuide } from './guide.ts';
 import { describeGraph } from './purpose.ts';
 import { cacheDir, defaultStorePath, openStore as openStoreAt, type Store } from './store/index.ts';
@@ -38,6 +39,7 @@ function stripSource(graph: CodeGraph) {
     if (n.after) n.after.source = '';
   }
   if (graph.explore?.readme) graph.explore.readme.text = '';
+  for (const f of graph.review?.files ?? []) delete f.patch;
   graph.meta.sourceIncluded = false;
 }
 
@@ -109,6 +111,7 @@ program
       const provider = await providerFor(o.enrich === true ? 'heuristic' : o.enrich, o.model, o.baseUrl);
       log(`Enriching with ${provider.name}…`);
       graph = await enrich(graph, provider, { log, purposes: o.purpose, store });
+      graph.enrichment!.brief = await buildBrief(graph, provider, { store, log });
     }
     await store?.close();
     if (o.source === false) stripSource(graph);
@@ -134,6 +137,7 @@ program
     const store = await openStore(o);
     log(`Enriching ${graph.meta.stats.changedFunctions} changed functions with ${provider.name}…`);
     await enrich(graph, provider, { concurrency: Number(o.concurrency), log, purposes: o.purpose, store });
+    graph.enrichment!.brief = await buildBrief(graph, provider, { store, log });
     await store?.close();
     if (o.source === false) stripSource(graph);
     await writeJson(here(o.out ?? file), graph);
@@ -172,6 +176,7 @@ program
     const provider = await providerFor(o.provider, o.model, o.baseUrl);
     log(`Enriching with ${provider.name}…`);
     graph = await enrich(graph, provider, { concurrency: Number(o.concurrency), log, purposes: o.purpose, store });
+    graph.enrichment!.brief = await buildBrief(graph, provider, { store, log });
     await store?.close();
     const report = reviewReport(graph);
     if (o.graph) {
@@ -217,15 +222,17 @@ program
     let graph = await inspect(pr.root, { base: pr.base, head: pr.head, maxDepth: Number(o.depth), full: false, store, types: o.types, log });
     const provider = await providerFor(o.provider, o.model, o.baseUrl);
     log(`Enriching with ${provider.name}…`);
-    graph = await enrich(graph, provider, { concurrency: Number(o.concurrency), log, purposes: o.purpose, store });
-    await store?.close();
     graph.meta.pr = pr.info;
+    if (graph.review) graph.review.key = `${new URL(pr.info.url).host}/${pr.info.repo}#${pr.info.number}`;
+    graph = await enrich(graph, provider, { concurrency: Number(o.concurrency), log, purposes: o.purpose, store });
+    graph.enrichment!.brief = await buildBrief(graph, provider, { store, log });
+    await store?.close();
     const { fetchDiscussion } = await import('./discussion.ts');
-    graph.meta.pr.discussion = await fetchDiscussion(graph, pr.root).catch((err: Error) => {
+    graph.meta.pr!.discussion = await fetchDiscussion(graph, pr.root).catch((err: Error) => {
       log(`  ! could not load the discussion (${err.message})`);
       return undefined;
     });
-    const d = graph.meta.pr.discussion;
+    const d = graph.meta.pr!.discussion;
     if (d) log(`Discussion: ${d.threads.length} thread${d.threads.length === 1 ? '' : 's'} (${d.threads.filter((t) => t.fnId).length} on functions in the map), ${d.reviews.length} review${d.reviews.length === 1 ? '' : 's'}, ${d.conversation.length} comment${d.conversation.length === 1 ? '' : 's'}`);
     const report = reviewReport(graph);
     if (o.source === false) stripSource(graph);

@@ -1,8 +1,22 @@
 import { simpleGit, type SimpleGit } from 'simple-git';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export const WORKING_TREE = 'WORKING';
+
+/** Larger per-file diffs (generated files, lockfiles) are listed without their text. */
+const MAX_PATCH_CHARS = 300_000;
+
+export interface ReviewFileDiff {
+  /** Unified diff hunks with 3 lines of context, from the first `@@`. */
+  patch?: string;
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed';
+  additions: number;
+  deletions: number;
+  fingerprint: string;
+}
 
 export interface FileChange {
   status: 'added' | 'modified' | 'deleted';
@@ -45,6 +59,51 @@ export class Repo {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Every changed file (code or not) with its line counts and a fingerprint of its own diff: the
+   * fingerprint survives unrelated pushes and rebases, and changes when this file's changes do.
+   */
+  async fileDiffs(base: string, head: string): Promise<ReviewFileDiff[]> {
+    const range = head === WORKING_TREE ? [base] : [base, head];
+    const numstat = await this.git.raw(['diff', '--numstat', '-M', '--no-color', ...range]);
+    const patch = await this.git.raw(['diff', '-M', '--no-color', '--no-ext-diff', '--unified=0', ...range]);
+    // The readable version, with context, for the diff viewer.
+    const full = await this.git.raw(['diff', '-M', '--no-color', '--no-ext-diff', '--unified=3', ...range]);
+    const readable = new Map<string, string>();
+    for (const chunk of full.split(/^diff --git /m).slice(1)) {
+      const path = (chunk.match(/^\+\+\+ b\/(.+)$/m) ?? chunk.match(/^rename to (.+)$/m) ?? chunk.match(/^--- a\/(.+)$/m))?.[1];
+      const start = chunk.indexOf('\n@@');
+      if (path && start >= 0 && chunk.length <= MAX_PATCH_CHARS) readable.set(path, chunk.slice(start + 1).trimEnd());
+    }
+    const counts = new Map<string, { additions: number; deletions: number }>();
+    for (const line of numstat.split('\n').filter(Boolean)) {
+      const [a, d, ...rest] = line.split('\t');
+      // Renames print `old => new` (or `dir/{old => new}/file`); keep the new path.
+      const path = rest.join('\t').replace(/\{[^}]* => ([^}]*)\}/, '$1').replace(/^.* => /, '').replace(/\/\//g, '/');
+      counts.set(path, { additions: Number(a) || 0, deletions: Number(d) || 0 });
+    }
+    const out: ReviewFileDiff[] = [];
+    for (const chunk of patch.split(/^diff --git /m).slice(1)) {
+      const path = (chunk.match(/^\+\+\+ b\/(.+)$/m) ?? chunk.match(/^rename to (.+)$/m) ?? chunk.match(/^--- a\/(.+)$/m))?.[1];
+      if (!path) continue;
+      const status = /^new file mode/m.test(chunk) ? 'added' : /^deleted file mode/m.test(chunk) ? 'deleted' : /^rename from/m.test(chunk) ? 'renamed' : 'modified';
+      // Only the changed lines themselves: line numbers and context move with unrelated edits.
+      const body = chunk
+        .split('\n')
+        .filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---) /.test(l))
+        .join('\n');
+      const fingerprint = createHash('sha1').update(`${status}\0${body}`).digest('hex').slice(0, 16);
+      out.push({ path, status, fingerprint, ...(counts.get(path) ?? { additions: 0, deletions: 0 }), patch: readable.get(path) });
+    }
+    return out;
+  }
+
+  /** The checked-out branch name, or null when detached. */
+  async branch(): Promise<string | null> {
+    const b = (await this.git.raw(['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '')).trim();
+    return b && b !== 'HEAD' ? b : null;
   }
 
   async changedFiles(base: string, head: string): Promise<FileChange[]> {

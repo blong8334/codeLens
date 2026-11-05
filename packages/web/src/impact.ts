@@ -3,9 +3,9 @@ import { GROUP_KIND_FOR_LOD, isBreaking, isChanged, type FnNode, type Group, typ
 
 /**
  * The impact map: one focus function in the middle, upstream callers in columns to the left,
- * downstream callees to the right, external effects at the far right. Detail falls off with
- * distance (fisheye): near hops show one level finer than far hops, and anything beyond the
- * column cap folds into a "+N more" bundle.
+ * downstream callees to the right, external effects at the far right. Everything but the focus is
+ * grouped at the chosen level (function, file, module, system), and anything beyond the column
+ * cap folds into a "+N more" bundle.
  */
 
 export const MAX_HOPS = 4;
@@ -89,7 +89,8 @@ export function buildMap(
   const itemOfFn = new Map<string, string>();
   for (const [id, h] of hop) {
     const fn = ix.fns.get(id)!;
-    let level = id === focus ? 0 : Math.abs(h) <= 1 ? Math.max(0, lod - 1) : lod;
+    // The chosen grouping applies to everything but the focus, so each level visibly changes the map.
+    let level = id === focus ? 0 : lod;
     let gid = groupAt(fn, level);
     while (gid && expandedGroups.has(gid)) {
       level--;

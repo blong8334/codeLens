@@ -3,6 +3,7 @@ import { displayName, ENTRY_LABEL, inlineCode, isChanged, type FnNode, type Grou
 import { EntryBadge, RiskBar, SinceBadge, StatusBadge } from './nodes.tsx';
 import { DiffBlock } from './DiffView.tsx';
 import { codeLinks } from './links.ts';
+import { AcceptButton, MarkBox } from './Marks.tsx';
 import { FunctionDiscussion, OtherDiscussion, ReviewBox, ReviewsSummary, useDiscussion } from './Discussion.tsx';
 
 interface Props {
@@ -14,6 +15,31 @@ interface Props {
   onFocus: (fnId: string) => void;
   onToggleGroup: (groupId: string) => void;
   onLayer: (layer: Layer, fnId?: string) => void;
+  /** Open the full-screen diff of a file (optionally at a function). */
+  onOpenDiff?: (path: string, fnId?: string) => void;
+  nav?: NavControls;
+}
+
+export interface NavControls {
+  back: () => void;
+  forward: () => void;
+  canBack: boolean;
+  canForward: boolean;
+}
+
+/** Back / forward, where the reader's eyes and pointer already are. */
+export function NavButtons({ nav }: { nav?: NavControls }) {
+  if (!nav) return null;
+  return (
+    <div className="panel-nav">
+      <button className="icon-btn nav-btn" onClick={nav.back} disabled={!nav.canBack} title="Back (Backspace)" aria-label="Back">
+        ← Back
+      </button>
+      <button className="icon-btn nav-btn" onClick={nav.forward} disabled={!nav.canForward} title="Forward" aria-label="Forward">
+        →
+      </button>
+    </div>
+  );
 }
 
 export function Prose({ text }: { text: string }) {
@@ -39,6 +65,15 @@ function Section({ title, count, defaultOpen = true, children }: { title: string
 }
 
 export function Panel(props: Props) {
+  return (
+    <>
+      <NavButtons nav={props.nav} />
+      <PanelBody {...props} />
+    </>
+  );
+}
+
+function PanelBody(props: Props) {
   const { ix, selection } = props;
   if (!selection) return ix.explore ? <ExplorePanel {...props} /> : <OverviewPanel {...props} />;
   if (selection.kind === 'group') return <GroupPanel {...props} group={ix.groups.get(selection.id)!} />;
@@ -366,7 +401,8 @@ function OverviewPanel({ ix, focus, onFocus }: Props) {
   );
 }
 
-function FnPanel({ ix, fn, focus, onSelect, onFocus, onLayer }: Props & { fn: FnNode }) {
+function FnPanel(props: Props & { fn: FnNode }) {
+  const { ix, fn, focus, onSelect, onFocus, onLayer } = props;
   const e = fn.enrichment;
   const callers = (ix.callers.get(fn.id) ?? []).map((c) => ({ edge: c, fn: ix.fns.get(c.source)! }));
   const callees = (ix.callees.get(fn.id) ?? []).map((c) => ({ edge: c, fn: ix.fns.get(c.target)! }));
@@ -397,6 +433,14 @@ function FnPanel({ ix, fn, focus, onSelect, onFocus, onLayer }: Props & { fn: Fn
         {e?.contract.breaking && <span className="badge status-deleted">breaking</span>}
       </div>
       <PurposeBlock fn={fn} />
+      {(ix.graph.review?.files.some((f) => f.path === fn.file) || fn.diff) && props.onOpenDiff && (
+        <div className="diff-launch">
+          <AcceptButton fnId={fn.id} />
+          <button className="btn" onClick={() => props.onOpenDiff!(fn.file, fn.id)} title="Full-screen diff of this file (d)">
+            ⤢ Expand diff
+          </button>
+        </div>
+      )}
       <CodeLinksRow ix={ix} file={fn.file} fn={fn} />
       {fn.id !== focus && (
         <div className="drill-row drill-row-top">
@@ -505,7 +549,8 @@ function FnPanel({ ix, fn, focus, onSelect, onFocus, onLayer }: Props & { fn: Fn
   );
 }
 
-function GroupPanel({ ix, group: g, expandedGroups, onSelect, onFocus, onToggleGroup }: Props & { group: Group }) {
+function GroupPanel(props: Props & { group: Group }) {
+  const { ix, group: g, expandedGroups, onSelect, onFocus, onToggleGroup } = props;
   const fns = g.fnIds.map((id) => ix.fns.get(id)!).sort((a, b) => (ix.reviewRank.get(a.id) ?? 999) - (ix.reviewRank.get(b.id) ?? 999));
   const children = ix.childGroups.get(g.id) ?? [];
   const parent = g.parent ? ix.groups.get(g.parent) : undefined;
@@ -535,6 +580,14 @@ function GroupPanel({ ix, group: g, expandedGroups, onSelect, onFocus, onToggleG
       </div>
       {g.summary && <p className="summary">{g.summary}</p>}
       {g.kind === 'file' && g.path && <CodeLinksRow ix={ix} file={g.path} />}
+      {g.kind === 'file' && g.path && props.onOpenDiff && ix.graph.review?.files.some((f) => f.path === g.path) && (
+        <div className="diff-launch">
+          <button className="btn btn-primary" onClick={() => props.onOpenDiff!(g.path!)}>
+            ⤢ Expand diff
+          </button>
+          <MarkBox path={g.path} />
+        </div>
+      )}
       {changed.length > 0 && <RiskBar value={risk} />}
       <div className="drill-row drill-row-top">
         {g.kind !== 'file' || fns.length > 1 ? (

@@ -3,6 +3,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { userInfo } from 'node:os';
+import { openStore, type Store } from './store/index.ts';
 import type { CodeGraph } from './types.ts';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -34,17 +36,19 @@ function ensureBuilt(log: (m: string) => void) {
   if (r.status !== 0) throw new Error('building the canvas failed (run `npm run build` to see why)');
 }
 
-export async function view(graphPath: string, opts: { port?: number; open?: boolean; log: (m: string) => void }): Promise<Server> {
+export async function view(graphPath: string, opts: { port?: number; open?: boolean; store?: string; log: (m: string) => void }): Promise<Server> {
   ensureBuilt(opts.log);
   // Any web page can send requests to localhost. Writes therefore need this token, which only the
   // CodeLens page itself receives (in its HTML), and every API call must name this server as its
   // host — which defeats DNS rebinding.
   const token = randomBytes(24).toString('hex');
+  let storePromise: Promise<Store> | undefined;
+  const getStore = () => (storePromise ??= openStore(opts.store));
   let port = 0;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     try {
-      if (url.pathname.startsWith('/api/')) return await api(req, res, url, { graphPath, token, port: () => port });
+      if (url.pathname.startsWith('/api/')) return await api(req, res, url, { graphPath, token, port: () => port, store: getStore });
       if (url.pathname === '/codelens.graph.json') {
         // Read on every request, so re-running explore and reloading the page shows the new graph.
         res.writeHead(200, { 'content-type': TYPES['.json'], 'cache-control': 'no-store' }).end(await readFile(graphPath));
@@ -93,7 +97,7 @@ function openBrowser(url: string) {
 
 const MAX_BODY = 64 * 1024;
 
-async function api(req: IncomingMessage, res: ServerResponse, url: URL, ctx: { graphPath: string; token: string; port: () => number }) {
+async function api(req: IncomingMessage, res: ServerResponse, url: URL, ctx: { graphPath: string; token: string; port: () => number; store: () => Promise<Store> }) {
   const send = (status: number, data: unknown) => res.writeHead(status, { 'content-type': TYPES['.json'], 'cache-control': 'no-store' }).end(JSON.stringify(data));
   const hosts = [`localhost:${ctx.port()}`, `127.0.0.1:${ctx.port()}`];
   if (!hosts.includes(req.headers.host ?? '')) return send(403, { error: 'wrong host' });
@@ -101,7 +105,30 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL, ctx: { g
 
   const { canPostToGitHub } = await import('./github.ts');
   const graph = JSON.parse(await readFile(ctx.graphPath, 'utf8')) as CodeGraph;
-  if (url.pathname === '/api/session' && req.method === 'GET') return send(200, { pr: !!graph.meta.pr, canPost: !!graph.meta.pr && canPostToGitHub() });
+  if (url.pathname === '/api/session' && req.method === 'GET') return send(200, { pr: !!graph.meta.pr, canPost: !!graph.meta.pr && canPostToGitHub(), marks: !!graph.review });
+
+  // "I'm good with this file" marks: CodeLens's own, so they work for any platform (or none).
+  if (url.pathname.startsWith('/api/review/')) {
+    if (!graph.review) return send(404, { error: 'this graph is not a review' });
+    const store = await ctx.store();
+    const reviewer = await reviewerName(graph.meta.repo);
+    const marks = async () => Object.fromEntries(await store.getMarks(graph.review!.key, reviewer));
+    if (url.pathname === '/api/review/marks' && req.method === 'GET') return send(200, { reviewer, marks: await marks() });
+    if (url.pathname === '/api/review/mark' && req.method === 'POST') {
+      const denied = guardWrite(req, ctx.token);
+      if (denied) return send(403, { error: denied });
+      const body = await readBody(req);
+      // A whole file ({ path }) or one changed function ({ fnId }, marked under its id).
+      const target =
+        typeof body.fnId === 'string'
+          ? graph.review.functions?.[body.fnId] && { key: body.fnId, fingerprint: graph.review.functions[body.fnId] }
+          : graph.review.files.find((f) => f.path === body.path) && { key: String(body.path), fingerprint: graph.review.files.find((f) => f.path === body.path)!.fingerprint };
+      if (!target) return send(400, { error: typeof body.fnId === 'string' ? 'not a changed function in this review' : 'not a file in this review' });
+      await store.setMark(graph.review.key, reviewer, target.key, body.reviewed ? target.fingerprint : null);
+      return send(200, { reviewer, marks: await marks() });
+    }
+    return send(404, { error: 'not found' });
+  }
   if (!graph.meta.pr) return send(404, { error: 'this graph is not a pull request review' });
 
   const discussion = await import('./discussion.ts');
@@ -114,10 +141,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL, ctx: { g
   }
 
   if (req.method !== 'POST') return send(405, { error: 'method not allowed' });
-  const given = Buffer.from(String(req.headers['x-codelens-token'] ?? ''));
-  const expected = Buffer.from(ctx.token);
-  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return send(403, { error: 'missing or wrong token' });
-  if (!String(req.headers['content-type'] ?? '').startsWith('application/json')) return send(415, { error: 'expected JSON' });
+  const denied = guardWrite(req, ctx.token);
+  if (denied) return send(denied === 'expected JSON' ? 415 : 403, { error: denied });
   const body = await readBody(req);
   const text = typeof body.body === 'string' ? body.body.trim() : '';
   try {
@@ -126,6 +151,12 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL, ctx: { g
       if (!fn) return send(400, { error: 'unknown function' });
       if (!text) return send(400, { error: 'write a comment first' });
       return send(200, await discussion.commentOnFunction(graph, fn, text));
+    }
+    if (url.pathname === '/api/pr/line-comment') {
+      const { path, line, side } = body as { path?: string; line?: number; side?: string };
+      if (!graph.review?.files.some((f) => f.path === path)) return send(400, { error: 'not a file in this review' });
+      if (typeof line !== 'number' || line < 1 || (side !== 'LEFT' && side !== 'RIGHT') || !text) return send(400, { error: 'path, line, side and body are required' });
+      return send(200, await discussion.commentOnLine(graph, path!, line, side, text));
     }
     if (url.pathname === '/api/pr/reply') {
       if (typeof body.threadId !== 'number' || !text) return send(400, { error: 'threadId and body are required' });
@@ -140,6 +171,23 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL, ctx: { g
     return send(502, { error: gitHubMessage((err as Error).message) });
   }
   return send(404, { error: 'not found' });
+}
+
+/** Writes need the page's token and a JSON body (which also forces a CORS preflight). */
+function guardWrite(req: IncomingMessage, token: string): string | undefined {
+  const given = Buffer.from(String(req.headers['x-codelens-token'] ?? ''));
+  const expected = Buffer.from(token);
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return 'missing or wrong token';
+  if (!String(req.headers['content-type'] ?? '').startsWith('application/json')) return 'expected JSON';
+  return undefined;
+}
+
+/** Whose marks these are: $CODELENS_REVIEWER, else git's user.name, else the OS user. */
+async function reviewerName(repo: string): Promise<string> {
+  if (process.env.CODELENS_REVIEWER) return process.env.CODELENS_REVIEWER;
+  const { simpleGit } = await import('simple-git');
+  const name = await simpleGit(repo).raw(['config', 'user.name']).then((s) => s.trim(), () => '');
+  return name || userInfo().username;
 }
 
 /** GitHub's own message ("Can not approve your own pull request") rather than the whole error. */

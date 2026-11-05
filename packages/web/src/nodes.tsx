@@ -1,5 +1,5 @@
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
-import { displayName, ENTRY_LABEL, isChanged, riskLevel, type FnNode, type Index, type Invariant } from './data.ts';
+import { displayName, ENTRY_LABEL, isChanged, isDone, riskLevel, type FnNode, type Index, type Invariant } from './data.ts';
 import type { MapItem } from './impact.ts';
 import { codeLinks } from './links.ts';
 
@@ -67,7 +67,7 @@ export function FocusCard({ data }: NodeProps<MapNode>) {
   const c = e?.contract;
   const showSig = c?.before && c.after && c.before !== c.after;
   return (
-    <div className={`card focus-card ${riskEdge(fn)} ${data.selected ? 'is-selected' : ''}`}>
+    <div className={`card focus-card ${riskEdge(fn)} ${data.selected ? 'is-selected' : ''} ${isDone(data.ix, fn) ? 'is-reviewed' : ''}`}>
       {handles}
       <div className="fn-head">
         <span className="card-title mono">{displayName(fn)}</span>
@@ -113,7 +113,7 @@ export function FnCard({ data }: NodeProps<Node<{ item?: MapItem; fn?: FnNode; i
   const fn = data.item?.fn ?? data.fn!;
   const e = fn.enrichment;
   return (
-    <div className={`card fn-card ${riskEdge(fn)} ${data.selected ? 'is-selected' : ''} ${data.dimmed ? 'is-dimmed' : ''}`}>
+    <div className={`card fn-card ${riskEdge(fn)} ${data.selected ? 'is-selected' : ''} ${data.dimmed ? 'is-dimmed' : ''} ${data.ix && isDone(data.ix, fn) ? 'is-reviewed' : ''}`}>
       {handles}
       <div className="fn-head">
         <span className="card-title mono" title={fn.qualifiedName}>
@@ -155,7 +155,7 @@ export function GroupCard({ data }: NodeProps<Node<MapData & { dimmed?: boolean 
   const risk = Math.max(0, ...fns.map((f) => f.enrichment?.blastRadius ?? 0));
   const fresh = fns.filter((f) => f.since).length;
   return (
-    <div className={`card group-card group-${g.kind} ${changed ? `risk-edge-${riskLevel(risk)}` : ''} ${selected ? 'is-selected' : ''} ${expanded ? 'is-expanded' : ''} ${dimmed ? 'is-dimmed' : ''}`}>
+    <div className={`card group-card group-${g.kind} ${changed ? `risk-edge-${riskLevel(risk)}` : ''} ${selected ? 'is-selected' : ''} ${expanded ? 'is-expanded' : ''} ${dimmed ? 'is-dimmed' : ''} ${fns.length && fns.every((f) => ix.reviewed.has(f.file)) ? 'is-reviewed' : ''}`}>
       {handles}
       <div className="fn-head">
         <span className="card-title" title={g.path ?? g.label}>

@@ -19,6 +19,10 @@ import {
   toEnrichment,
   toGroupMap,
   toPurposeMap,
+  BRIEF_SYSTEM,
+  briefPrompt,
+  BriefSchema,
+  toBrief,
 } from './prompts.ts';
 import type { EnrichmentProvider } from './enrich.ts';
 
@@ -33,6 +37,7 @@ export function claudeCodeProvider(opts: { model?: string } = {}): EnrichmentPro
   const purposeSchema = jsonSchema(PurposeSchema);
   const groupSchema = jsonSchema(GroupSchema);
   const guideSchema = jsonSchema(GuideSchema);
+  const briefSchema = jsonSchema(BriefSchema);
 
   return {
     name: `claude-code:${model}`,
@@ -55,6 +60,11 @@ export function claudeCodeProvider(opts: { model?: string } = {}): EnrichmentPro
     async describeGroups(items) {
       const result = await runClaude({ model, system: GROUP_SYSTEM, prompt: groupPrompt(items), jsonSchema: groupSchema });
       return toGroupMap(GroupSchema.parse(result.structured_output));
+    },
+
+    async describeBrief(input) {
+      const result = await runClaude({ model, system: BRIEF_SYSTEM, prompt: briefPrompt(input), jsonSchema: briefSchema });
+      return toBrief(BriefSchema.parse(result.structured_output));
     },
 
     async describeGuide(input) {

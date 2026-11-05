@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { BriefInput, BriefOutput } from './brief.ts';
 import type { GuideInput, GuideOutput } from './guide.ts';
 import type { DescriptionKind, Store } from './store/index.ts';
 import type { CodeGraph, FnNode, Group, Purpose } from './types.ts';
@@ -23,6 +24,8 @@ export interface Describer {
   describeGroups(items: GroupInput[]): Promise<Map<string, string>>;
   /** Write the package guide (explore mode's landing page). Optional: offline guides need no model. */
   describeGuide?(input: GuideInput): Promise<GuideOutput>;
+  /** Write the review brief (a code review's landing page). Optional, like the guide. */
+  describeBrief?(input: BriefInput): Promise<BriefOutput>;
 }
 
 

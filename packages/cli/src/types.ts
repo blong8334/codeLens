@@ -136,6 +136,29 @@ export interface CodeGraph {
   sinks: Sink[];
   enrichment?: GraphEnrichment;
   explore?: ExploreData;
+  /** Review mode: what is being reviewed, file by file (for "reviewed" marks). */
+  review?: ReviewData;
+}
+
+export interface ReviewData {
+  /** Stable id of this review across pushes: `github.com/owner/repo#12`, or `local:<root>:<branch>`. */
+  key: string;
+  files: ReviewFile[];
+  /** Changed function id → fingerprint of its own changes: an "accept change" mark holds while it matches. */
+  functions: Record<string, string>;
+}
+
+export interface ReviewFile {
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed';
+  additions: number;
+  deletions: number;
+  /** Hash of this file's changed lines: a mark is valid while it matches. */
+  fingerprint: string;
+  /** Changed functions in this file (0 for non-code files). */
+  functions: number;
+  /** Unified diff hunks with context, for the diff viewer (absent with --no-source, or when huge). */
+  patch?: string;
 }
 
 export interface PullRequestInfo {
@@ -287,9 +310,27 @@ export interface NodeEnrichment {
   source: 'heuristic' | 'llm';
 }
 
+/** The page a code review opens on. */
+export interface ReviewBrief {
+  /** What the change does and why. */
+  overview: string;
+  /** How it does it. */
+  approach: string[];
+  /** Concrete risks, most serious first. */
+  risks: { title: string; detail: string; fnIds: string[] }[];
+  /** What a reviewer should check. */
+  watch: string[];
+  /** Where to start reading, and why. */
+  readingOrder: { id: string; reason: string }[];
+  /** How the change is tested. */
+  testing: string;
+  source: 'llm' | 'heuristic';
+}
+
 export interface GraphEnrichment {
   summary: string;
   overallRisk: number; // 0.0 – 1.0
   reviewOrder: string[]; // node ids, highest risk first
+  brief?: ReviewBrief;
   provider: string;
 }

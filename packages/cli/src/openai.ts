@@ -21,6 +21,10 @@ import {
   toGroupMap,
   toGuide,
   toPurposeMap,
+  BRIEF_SYSTEM,
+  briefPrompt,
+  BriefSchema,
+  toBrief,
 } from './prompts.ts';
 
 export interface OpenAIOptions {
@@ -99,6 +103,10 @@ export function openaiProvider(opts: OpenAIOptions = {}): EnrichmentProvider {
     async describeGroups(items) {
       return toGroupMap(await structured(GroupSchema, 'group_summaries', GROUP_SYSTEM, groupPrompt(items)));
     },
+    async describeBrief(input) {
+      return toBrief(await structured(BriefSchema, 'review_brief', BRIEF_SYSTEM, briefPrompt(input)));
+    },
+
     async describeGuide(input) {
       return toGuide(await structured(GuideSchema, 'package_guide', GUIDE_SYSTEM, guidePrompt(input)));
     },

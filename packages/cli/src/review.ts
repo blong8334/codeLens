@@ -59,7 +59,7 @@ export function reviewReport(graph: CodeGraph): ReviewReport {
     reachedFrom.set(fn.id, entries);
   }
   const entryMap = new Map<string, { fn: FnNode; reaches: Set<string> }>();
-  for (const fn of changed) for (const e of reachedFrom.get(fn.id)!) (entryMap.get(e.id) ?? entryMap.set(e.id, { fn: e, reaches: new Set() }).get(e.id)!).reaches.add(fn.qualifiedName);
+  for (const fn of changed) for (const e of reachedFrom.get(fn.id)!) (entryMap.get(e.id) ?? entryMap.set(e.id, { fn: e, reaches: new Set() }).get(e.id)!).reaches.add(label(fn));
 
   // External systems touched by a change or by anything it calls.
   const calleesOf = new Map<string, string[]>();
@@ -80,10 +80,10 @@ export function reviewReport(graph: CodeGraph): ReviewReport {
   const rows = changed.map((fn) => {
     const e = fn.enrichment;
     const effects = effectsOf(fn.id);
-    for (const s of effects) (effectChanges.get(s) ?? effectChanges.set(s, new Set()).get(s)!).add(fn.qualifiedName);
+    for (const s of effects) (effectChanges.get(s) ?? effectChanges.set(s, new Set()).get(s)!).add(label(fn));
     return {
       id: fn.id,
-      name: fn.qualifiedName === '(top level)' ? `${fn.file.split('/').pop()} (top level)` : fn.qualifiedName,
+      name: label(fn),
       file: fn.file,
       line: fn.range.startLine,
       status: fn.status,
@@ -111,6 +111,8 @@ export function reviewReport(graph: CodeGraph): ReviewReport {
   };
 }
 
+/** `charge`, or `server.ts (top level)` for a file's top-level code. */
+const label = (fn: FnNode) => (fn.qualifiedName === '(top level)' ? `${fn.file.split('/').pop()} (top level)` : fn.qualifiedName);
 const entryName = (fn: FnNode) => (fn.qualifiedName === '(top level)' ? fn.file : fn.qualifiedName);
 
 function lineLink(graph: CodeGraph, fn: FnNode): string | undefined {

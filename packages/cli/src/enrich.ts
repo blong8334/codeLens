@@ -8,7 +8,10 @@ import type {
   NodeEnrichment,
   Signature,
 } from './types.ts';
+import { createHash } from 'node:crypto';
 import { describeGraph, heuristicDescriber, type Describer } from './purpose.ts';
+
+const hashOf = (...parts: string[]) => createHash('sha1').update(parts.join('\0')).digest('hex');
 
 /** Context handed to an enrichment provider for a single changed function. */
 export interface NodeContext {
@@ -17,6 +20,10 @@ export interface NodeContext {
   callees: FnNode[];
   /** Distinct files among all transitive callers. */
   modulesReached: number;
+  /** Transitive callers the change does not touch: the code that can break without being reviewed. */
+  untouchedCallers: number;
+  /** Lines added plus removed in this function. */
+  linesChanged: number;
   danglingCallers: number;
   heuristic: NodeEnrichment;
 }
@@ -50,6 +57,8 @@ export async function enrich(
       callers: (callersOf.get(node.id) ?? []).map((id) => byId.get(id)!),
       callees: (calleesOf.get(node.id) ?? []).map((id) => byId.get(id)!),
       modulesReached: new Set([...ancestors].map((id) => byId.get(id)!.file)).size,
+      untouchedCallers: [...ancestors].filter((id) => byId.get(id)!.status === 'unchanged').length,
+      linesChanged: (node.diff ?? '').split('\n').filter((l) => /^[+-]/.test(l)).length,
       danglingCallers: graph.edges.filter((e) => e.target === node.id && e.dangling).length,
       heuristic: undefined!,
     };
@@ -57,28 +66,60 @@ export async function enrich(
     return ctx;
   });
 
+  // Model analyses are stored by everything they depend on (the code before and after, who calls
+  // it, what it calls), so a new push to a pull request only re-analyzes what actually moved.
+  const cacheable = !!opts.store && provider.name !== 'heuristic';
+  const keyOf = (ctx: NodeContext) =>
+    hashOf(
+      provider.name,
+      'change',
+      ctx.node.id,
+      ctx.node.status,
+      ctx.node.before?.source ?? '',
+      ctx.node.source,
+      ctx.callers.map((n) => n.id).sort().join(','),
+      ctx.callees.map((n) => n.id).sort().join(','),
+      String(ctx.untouchedCallers),
+      String(ctx.danglingCallers),
+    );
+  const cached = cacheable ? await opts.store!.getDescriptions(contexts.map(keyOf)) : new Map<string, unknown>();
+  const fresh: { key: string; kind: 'change'; value: unknown }[] = [];
+  let reused = 0;
   await mapLimit(contexts, opts.concurrency ?? 4, async (ctx) => {
+    const key = keyOf(ctx);
+    const hit = cached.get(key) as NodeEnrichment | undefined;
+    if (hit) {
+      ctx.node.enrichment = hit;
+      reused++;
+      return;
+    }
     try {
       ctx.node.enrichment = await provider.enrichNode(ctx);
+      if (cacheable) fresh.push({ key, kind: 'change', value: ctx.node.enrichment });
     } catch (err) {
       log(`  ! ${provider.name} failed for ${ctx.node.id} (${(err as Error).message}); using heuristics`);
       ctx.node.enrichment = ctx.heuristic;
     }
     log(`  ✓ ${ctx.node.qualifiedName} — blast radius ${ctx.node.enrichment.blastRadius.toFixed(2)}`);
   });
+  if (reused) log(`  ${reused} change${reused === 1 ? '' : 's'} unchanged since the last analysis (from the store)`);
 
   const ranked = [...changed].sort((a, b) => b.enrichment!.blastRadius - a.enrichment!.blastRadius);
   const top = ranked.slice(0, 3).map((n) => n.enrichment!.blastRadius);
   const overallRisk = top.length ? Math.min(1, Math.max(...top) * 0.7 + (top.reduce((a, b) => a + b, 0) / top.length) * 0.3) : 0;
 
   let summary: string;
+  const summaryKey = hashOf(provider.name, 'summary', ...ranked.map((n) => `${n.id}:${n.enrichment!.blastRadius}:${n.enrichment!.summary}`));
+  const storedSummary = cacheable ? ((await opts.store!.getDescriptions([summaryKey])).get(summaryKey) as string | undefined) : undefined;
   try {
-    summary = await provider.summarize(graph, ranked);
+    summary = storedSummary ?? (await provider.summarize(graph, ranked));
+    if (cacheable && !storedSummary) fresh.push({ key: summaryKey, kind: 'change', value: summary });
   } catch (err) {
     log(`  ! summary failed (${(err as Error).message}); using heuristics`);
     summary = await heuristicProvider.summarize(graph, ranked);
   }
 
+  if (fresh.length) await opts.store!.putDescriptions(fresh);
   graph.enrichment = { summary, overallRisk: round(overallRisk), reviewOrder: ranked.map((n) => n.id), provider: provider.name };
 
   if (opts.purposes !== false) {
@@ -119,12 +160,17 @@ export function heuristicEnrichment(ctx: NodeContext): NodeEnrichment {
   const invariants = detectInvariants(node);
   const reasons: string[] = [];
 
+  // Blast radius is about code the change does NOT touch: callers that are themselves part of the
+  // change get reviewed anyway, and nothing outside a change can call a function it just added.
   let score = 0.08;
-  const reach = 1 - Math.exp(-node.transitiveCallers / 6);
+  const reach = 1 - Math.exp(-ctx.untouchedCallers / 6);
   score += 0.35 * reach;
-  if (node.transitiveCallers) reasons.push(`${node.transitiveCallers} transitive caller${node.transitiveCallers > 1 ? 's' : ''} across ${ctx.modulesReached} file${ctx.modulesReached === 1 ? '' : 's'}`);
+  if (ctx.untouchedCallers) reasons.push(`${ctx.untouchedCallers} caller${ctx.untouchedCallers > 1 ? 's' : ''} outside this change, across ${ctx.modulesReached} file${ctx.modulesReached === 1 ? '' : 's'}`);
+  // Bigger changes deserve more attention than one-line helpers (up to +0.1 around 100 lines).
+  score += Math.min(0.1, 0.025 * Math.log2(1 + ctx.linesChanged));
   if (ctx.modulesReached > 1) score += Math.min(0.1, 0.03 * ctx.modulesReached);
-  if (node.exported) {
+  // An exported function nothing calls yet is new surface, not existing risk.
+  if (node.exported && (node.status !== 'added' || ctx.untouchedCallers)) {
     score += 0.1;
     reasons.push('part of the exported/public surface');
   }

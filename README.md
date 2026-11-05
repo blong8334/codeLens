@@ -5,7 +5,7 @@ Visual-first code understanding. CodeLens has two modes:
 - **Explore** a whole package or repository to learn how it works: a zoomed-out map of its systems and modules, entry points to start reading from, hotspots, external effects, search, and a *what / why* for every function. A local store remembers what you have already seen, so re-exploring after a `git pull` only processes new code and tells you what changed.
 - **Review** a diff. Instead of a line-by-line unified diff, CodeLens turns a git diff into an interactive review:
 
-1. **Impact map**: one changed function at the center, upstream callers to the left, downstream callees and external effects (database, network, filesystem, …) to the right. A **Detail** control zooms out from Function → File → Module → System. Detail falls off with distance, so near neighbors stay specific and far ones fold into their file, module, or system.
+1. **Impact map**: one changed function at the center, upstream callers to the left, downstream callees and external effects (database, network, filesystem, …) to the right. A **Group by** control shows the callers and callees as individual functions, or grouped by file, module, or system. The centered function always stays its own card.
 2. **Invariants**: what could fail, the evidence for it, and who relies on it
 3. **Diffs**: the exact lines, per function, in suggested review order
 
@@ -74,7 +74,7 @@ It opens on the **guide**, a landing page for the package:
 
 Switch between **Guide** and **Map** in the header (`g` / `m`). Links with `?fn=…` or `?view=map` open straight on the map.
 
-The map opens on the **overview**: the package's systems or modules, connected by call volume, with the databases, network, queues and filesystems they touch. Use **Detail** to switch between System, Module, and File; double-click a part to open it in place, or a function to center on it. **Tests** toggles test code. The side panel lists:
+The map opens on the **overview**: the package's systems or modules, connected by call volume, with the databases, network, queues and filesystems they touch. Use **Group by** to switch between System, Module, and File; double-click a part to open it in place, or a function to center on it. **Tests** toggles test code. The side panel lists:
 - **Start reading here**: entry points (mains, routes, CLI commands, jobs, public API). `←` / `→` steps through them.
 - **Hotspots**: the functions that hold the package together. They are ranked by callers, callees, how many modules they connect, and how much of the code reaches them.
 - **Talks to**: external effects.

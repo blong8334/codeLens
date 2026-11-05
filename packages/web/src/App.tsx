@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Background, Controls, MiniMap, ReactFlow, type Node, type NodeMouseHandler } from '@xyflow/react';
-import { buildIndex, defaultOverviewLod, displayName, LAYERS, LODS, OVERVIEW, riskLevel, type CodeGraph, type Index, type Layer, type Lod, type Selection } from './data.ts';
+import { Background, Controls, getNodesBounds, MiniMap, ReactFlow, useReactFlow, useStore, type Edge, type Node, type NodeMouseHandler } from '@xyflow/react';
+import { buildIndex, defaultOverviewLod, displayName, isDone, LAYERS, LODS, OVERVIEW, riskLevel, type CodeGraph, type Index, type Layer, type Lod, type Selection } from './data.ts';
 import { buildMap, type MapItem } from './impact.ts';
 import { buildOverview } from './overview.ts';
 import { Search, type SearchHit } from './Search.tsx';
 import { Guide } from './Guide.tsx';
+import { Brief } from './Brief.tsx';
+import { MarksProvider, ReviewProgress, useMarks } from './Marks.tsx';
+import { DiffViewer } from './DiffViewer.tsx';
 import { DiscussionProvider } from './Discussion.tsx';
 import type { PrDiscussion } from '../../cli/src/types.ts';
 import { invariantLayer } from './layers.ts';
@@ -120,23 +123,31 @@ function Review({ graph, onReset }: { graph: CodeGraph; onReset: () => void }) {
   );
   return (
     <DiscussionProvider graph={graph} onChange={onDiscussion}>
-      <ReviewView graph={graph} version={version} onReset={onReset} />
+      <MarksProvider graph={graph}>
+        <ReviewView graph={graph} version={version} onReset={onReset} />
+      </MarksProvider>
     </DiscussionProvider>
   );
 }
 
 function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: number; onReset: () => void }) {
+  const { reviewed, accepted } = useMarks();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const ix = useMemo(() => buildIndex(graph), [graph, version]);
+  const ix = useMemo(() => buildIndex(graph, reviewed, accepted), [graph, version, reviewed, accepted]);
 
   // Deep links: ?layer=1&fn=<node id>&lod=2
   const params = new URLSearchParams(location.search);
   const linked = params.get('fn');
-  const initialFocus = linked && ix.fns.has(linked) ? linked : ix.explore ? OVERVIEW : (ix.reviewOrder[0] ?? OVERVIEW);
-  const tour = ix.explore ? ix.tour : ix.reviewOrder;
+  const initialFocus = params.get('ov') ? OVERVIEW : linked && ix.fns.has(linked) ? linked : ix.explore ? OVERVIEW : (ix.reviewOrder[0] ?? OVERVIEW);
+  // Stepping through changes skips files already marked reviewed.
+  const tour = ix.explore ? ix.tour : ix.reviewOrder.filter((id) => ix.fns.has(id) && !isDone(ix, ix.fns.get(id)!));
   const searchRef = useRef<HTMLInputElement>(null);
   // Explore mode opens on the guide unless a link asks for a specific function or the map.
-  const [view, setView] = useState<'guide' | 'map'>(() => (ix.explore && !linked && params.get('view') !== 'map' ? 'guide' : 'map'));
+  // Both modes open on a landing page — the package guide, or the review brief — unless a link
+  // asks for a specific function or the map.
+  const landing = ix.explore || !!graph.meta.pr || !!graph.enrichment;
+  const landingName = ix.explore ? 'Guide' : 'Brief';
+  const [view, setView] = useState<'guide' | 'map'>(() => (landing && (params.get('view') === 'guide' || (!linked && params.get('view') !== 'map')) ? 'guide' : 'map'));
 
   const [layer, setLayer] = useState<Layer>(() => (Number(params.get('layer')) || 1) as Layer);
   const [history, setHistory] = useState<string[]>([initialFocus]);
@@ -153,7 +164,46 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
   const [opened, setOpened] = useState<Set<string>>(new Set());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [expandedCols, setExpandedCols] = useState<Set<number>>(new Set());
-  const [selection, setSelection] = useState<Selection>(linked ? { kind: 'fn', id: initialFocus } : null);
+  const [selection, setSelection] = useState<Selection>(() => (params.has('sel') ? decodeSelection(params.get('sel')) : linked ? { kind: 'fn', id: initialFocus } : null));
+
+  // ---- back / forward: every move is a browser history entry, and the URL says where you are ----
+  const [nav, setNav] = useState({ depth: 0, max: 0 });
+  useEffect(() => {
+    const place: Place = { view, layer, focus, sel: encodeSelection(selection) };
+    const current = window.history.state as (Place & { depth?: number }) | null;
+    // Equal to the current entry: nothing moved, or this render is restoring it after back/forward.
+    if (current && current.view === place.view && current.layer === place.layer && current.focus === place.focus && current.sel === place.sel) return;
+    const url = placeUrl(place);
+    if (current?.depth === undefined) {
+      window.history.replaceState({ ...place, depth: 0 }, '', url);
+      return;
+    }
+    const depth = current.depth + 1;
+    window.history.pushState({ ...place, depth }, '', url);
+    setNav({ depth, max: depth });
+  }, [view, layer, focus, selection]);
+  useEffect(() => {
+    const onPop = (e: PopStateEvent) => {
+      const p = e.state as (Place & { depth: number }) | null;
+      if (!p) return;
+      setView(p.view);
+      setLayer(p.layer);
+      setHistory((h) => {
+        const at = h.lastIndexOf(p.focus);
+        return at >= 0 ? h.slice(0, at + 1) : [...h.slice(-11), p.focus];
+      });
+      setSelection(decodeSelection(p.sel));
+      setNav((n) => ({ depth: p.depth, max: Math.max(n.max, p.depth) }));
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  const back = useCallback(() => window.history.back(), []);
+  const forward = useCallback(() => window.history.forward(), []);
+  const navControls = { back, forward, canBack: nav.depth > 0, canForward: nav.depth < nav.max };
+  // The full-screen diff of one file, over everything else.
+  const [diff, setDiff] = useState<{ path: string; fnId?: string } | null>(null);
+  const openDiff = useCallback((path: string, fnId?: string) => setDiff({ path, fnId }), []);
 
   const centerOn = useCallback(
     (id: string, mode: 'push' | 'replace' = 'push') => {
@@ -222,21 +272,23 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
       if (e.key === '/') {
         e.preventDefault();
         searchRef.current?.focus();
-      } else if (ix.explore && e.key === 'g') setView('guide');
-      else if (ix.explore && e.key === 'm') setView('map');
+      } else if (landing && (e.key === 'g' || e.key === 'b')) setView('guide');
+      else if (landing && e.key === 'm') setView('map');
+      else if (e.key === 'Backspace' && nav.depth > 0) back();
       else if (view === 'guide') return;
       else if (e.key === 'o' || e.key === 'Home') showOverview();
       else if (!ix.explore && ['1', '2', '3'].includes(e.key)) setLayer(Number(e.key) as Layer);
       else if (e.key === 'Escape') setSelection(null);
+      else if (e.key === 'd' && selection?.kind === 'fn' && ix.fns.get(selection.id)) openDiff(ix.fns.get(selection.id)!.file, selection.id);
       else if (layer === 1 && (e.key === '-' || e.key === '_')) changeLod(Math.min(3, lod + 1) as Lod);
       else if (layer === 1 && (e.key === '=' || e.key === '+')) changeLod(Math.max(minLod, lod - 1) as Lod);
       else if (e.key === 'ArrowRight' || e.key === 'j') stepChange(1);
       else if (e.key === 'ArrowLeft' || e.key === 'k') stepChange(-1);
-      else if (e.key === 'Backspace' && history.length > 1) setHistory((h) => h.slice(0, -1));
+      else if (e.key === 'Backspace' && nav.depth > 0) back();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [layer, lod, minLod, history, changeLod, stepChange, showOverview, ix, view]);
+  }, [layer, lod, minLod, history, changeLod, stepChange, showOverview, ix, view, nav, back, selection, openDiff]);
 
   const { meta, enrichment } = graph;
   const risk = enrichment?.overallRisk ?? 0;
@@ -273,10 +325,10 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
             </span>
           )}
         </div>
-        {ix.explore && (
+        {landing && (
           <div className="view-switch" role="tablist" aria-label="View">
-            <button role="tab" aria-selected={view === 'guide'} className={view === 'guide' ? 'active' : ''} onClick={() => setView('guide')} title="Guide (g)">
-              Guide
+            <button role="tab" aria-selected={view === 'guide'} className={view === 'guide' ? 'active' : ''} onClick={() => setView('guide')} title={`${landingName} (${ix.explore ? 'g' : 'b'})`}>
+              {landingName}
             </button>
             <button role="tab" aria-selected={view === 'map'} className={view === 'map' ? 'active' : ''} onClick={() => setView('map')} title="Map (m)">
               Map
@@ -311,7 +363,7 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
         </button>
       </header>
 
-      {!ix.explore && (
+      {!ix.explore && view === 'map' && (
       <nav className="layers" aria-label="Review layers">
         {LAYERS.map((l) => (
           <button key={l.id} className={`layer-tab ${layer === l.id ? 'active' : ''}`} onClick={() => setLayer(l.id)} title={l.hint}>
@@ -325,7 +377,21 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
       </nav>
       )}
 
-      {ix.explore && view === 'guide' ? (
+      {!ix.explore && view === 'guide' ? (
+        <Brief
+          ix={ix}
+          nav={navControls}
+          onOpenDiff={openDiff}
+          onStart={(id) => {
+            setView('map');
+            centerOn(id);
+          }}
+          onMap={() => {
+            setView('map');
+            setLayer(1);
+          }}
+        />
+      ) : ix.explore && view === 'guide' ? (
         <Guide
           ix={ix}
           onStart={(id) => {
@@ -351,7 +417,15 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
                   ‹
                 </button>
                 <span className="focus-count">
-                  {changeIndex >= 0 ? `${stepNoun} ${changeIndex + 1} of ${tour.length}` : inOverview ? 'Overview' : 'Exploring'}
+                  {changeIndex >= 0
+                    ? `${stepNoun} ${changeIndex + 1} of ${tour.length}`
+                    : inOverview
+                      ? 'Overview'
+                      : !ix.explore && ix.fns.get(focus) && isDone(ix, ix.fns.get(focus)!)
+                        ? tour.length
+                          ? `Accepted · ${tour.length} left`
+                          : 'All changes reviewed ✓'
+                        : 'Exploring'}
                 </span>
                 <button className="icon-btn" onClick={() => stepChange(1)} title={`Next ${stepNoun.toLowerCase()} (→)`} disabled={!tour.length}>
                   ›
@@ -371,13 +445,16 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
                   ))}
                 </span>
               </div>
+              {!ix.explore && <ReviewProgress compact />}
               <div className="lod" role="radiogroup" aria-label="Level of detail">
                 {inOverview && hasTests && (
                   <button className={`lod-btn tests-btn ${showTests ? 'active' : ''}`} onClick={() => setShowTests(!showTests)} aria-pressed={showTests} title="Show test code in the overview">
                     Tests
                   </button>
                 )}
-                <span className="lod-label">Detail</span>
+                <span className="lod-label" title={inOverview ? 'Show the code as systems, modules or files' : 'Show the callers and callees around the focus as individual functions, or grouped by file, module or system'}>
+                  Group by
+                </span>
                 <label className="budget" title="Most cards drawn at once; the rest fold into “+N more” cards">
                   <span className="lod-label">Cards</span>
                   <select value={budget} onChange={(e) => setBudget(Number(e.target.value))}>
@@ -444,12 +521,60 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
               setLayer(1);
             }}
             onLayer={openLayer}
+            onOpenDiff={openDiff}
+            nav={navControls}
           />
         </aside>
       </main>
       )}
+      {diff && <DiffViewer key={diff.path} ix={ix} path={diff.path} fnId={diff.fnId} onClose={() => setDiff(null)} onOpen={(path) => setDiff({ path })} />}
     </div>
   );
+}
+
+// ---- where you are, as a history entry and a URL ----
+
+interface Place {
+  view: 'guide' | 'map';
+  layer: Layer;
+  focus: string;
+  sel: string | null;
+}
+
+function encodeSelection(s: Selection): string | null {
+  if (!s) return null;
+  if (s.kind === 'invariant') return `inv:${s.index}:${s.fnId}`;
+  return `${s.kind}:${s.id}`;
+}
+
+function decodeSelection(raw: string | null): Selection {
+  if (!raw) return null;
+  const i = raw.indexOf(':');
+  const kind = raw.slice(0, i);
+  const rest = raw.slice(i + 1);
+  if (kind === 'inv') {
+    const j = rest.indexOf(':');
+    return { kind: 'invariant', index: Number(rest.slice(0, j)), fnId: rest.slice(j + 1) };
+  }
+  if (kind === 'fn' || kind === 'group' || kind === 'sink') return { kind, id: rest };
+  return null;
+}
+
+/** The current URL with this place in it (other parameters, like ?graph=, are kept). */
+function placeUrl(p: Place): string {
+  const q = new URLSearchParams(location.search);
+  q.set('view', p.view);
+  q.set('layer', String(p.layer));
+  if (p.focus === OVERVIEW) {
+    q.delete('fn');
+    q.set('ov', '1');
+  } else {
+    q.set('fn', p.focus);
+    q.delete('ov');
+  }
+  if (p.sel) q.set('sel', p.sel);
+  else q.delete('sel');
+  return `${location.pathname}?${q.toString()}`;
 }
 
 function Stat({ value, label }: { value: number; label: string }) {
@@ -481,9 +606,11 @@ function ImpactCanvas(props: {
   );
 
   const itemOf = (node: Node) => (node.data as { item?: MapItem }).item;
+  const clicked = useRef<string | null>(null);
   const onNodeClick: NodeMouseHandler<Node> = (_, node) => {
     const item = itemOf(node);
     if (!item) return;
+    clicked.current = node.id;
     if (item.kind === 'fn') onSelect({ kind: 'fn', id: item.fn!.id });
     else if (item.kind === 'group') onSelect({ kind: 'group', id: item.group!.id });
     else if (item.kind === 'sink') onSelect({ kind: 'sink', id: item.sink!.id });
@@ -518,6 +645,7 @@ function ImpactCanvas(props: {
         <Background gap={24} size={1} />
         <Controls showInteractive={false} />
         <MiniMap pannable zoomable className="minimap" nodeClassName={(n) => `mm-${n.type}`} />
+        <ZoomToSelection nodes={view.nodes} edges={view.edges} clicked={clicked} />
       </ReactFlow>
       <div className="map-stats">
         {view.stats.upstream} upstream · {view.stats.downstream} downstream
@@ -525,6 +653,47 @@ function ImpactCanvas(props: {
       </div>
     </>
   );
+}
+
+const ZOOM_MS = 450;
+/** Below this zoom cards are hard to read: frame the selected card alone instead of its neighbors. */
+const READABLE_ZOOM = 0.6;
+const MAX_ZOOM = 1.1;
+
+/**
+ * Brings the selected card into readable view: with its direct neighbors when they fit at a
+ * readable zoom, else the card alone. Selections made by clicking the map leave the view alone,
+ * so a click never moves what is under the pointer (or breaks a double-click).
+ */
+function ZoomToSelection({ nodes, edges, clicked }: { nodes: Node[]; edges: Edge[]; clicked: React.MutableRefObject<string | null> }) {
+  const flow = useReactFlow();
+  const width = useStore((s) => s.width);
+  const height = useStore((s) => s.height);
+  const target = nodes.find((n) => (n.data as { selected?: boolean }).selected)?.id;
+  const shown = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    // Cards carry explicit sizes, so their bounds are known without waiting for measurement.
+    if (!target || !width || !height || shown.current === target) return;
+    if (clicked.current === target) {
+      clicked.current = null;
+      shown.current = target;
+      return;
+    }
+    const at = (ids: Set<string>) => [...ids].map((id) => flow.getNode(id)).filter((n): n is Node => !!n);
+    const neighbors = new Set([target, ...edges.filter((e) => e.source === target || e.target === target).flatMap((e) => [e.source, e.target])]);
+    const around = getNodesBounds(at(neighbors));
+    const fit = Math.min(width / around.width, height / around.height) * 0.85;
+    const frame = fit >= READABLE_ZOOM ? around : getNodesBounds(at(new Set([target])));
+    const zoom = fit >= READABLE_ZOOM ? Math.min(fit, MAX_ZOOM) : 0.9;
+    // After React Flow's own initial fit-to-view, which would otherwise undo this.
+    // Marked done only when it runs: a re-render before then cancels and reschedules it.
+    const timer = setTimeout(() => {
+      shown.current = target;
+      void flow.setCenter(frame.x + frame.width / 2, frame.y + frame.height / 2, { zoom, duration: ZOOM_MS });
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [target, width, height, flow, edges, clicked]);
+  return null;
 }
 
 function OverviewCanvas(props: {
@@ -547,6 +716,7 @@ function OverviewCanvas(props: {
     [ix, lod, expandedGroups, selection, showTests, budget, opened],
   );
   const itemOf = (node: Node) => (node.data as { item?: MapItem }).item;
+  const clicked = useRef<string | null>(null);
   return (
     <>
       <ReactFlow
@@ -556,6 +726,7 @@ function OverviewCanvas(props: {
         nodeTypes={nodeTypes}
         onNodeClick={(_, node) => {
           const item = itemOf(node);
+          clicked.current = node.id;
           if (item?.kind === 'fn') onSelect({ kind: 'fn', id: item.fn!.id });
           else if (item?.kind === 'group') onSelect({ kind: 'group', id: item.group!.id });
           else if (item?.kind === 'sink') onSelect({ kind: 'sink', id: item.sink!.id });
@@ -580,6 +751,7 @@ function OverviewCanvas(props: {
         <Background gap={24} size={1} />
         <Controls showInteractive={false} />
         <MiniMap pannable zoomable className="minimap" nodeClassName={(n) => `mm-${n.type}`} />
+        <ZoomToSelection nodes={view.nodes} edges={view.edges} clicked={clicked} />
       </ReactFlow>
       <div className="map-stats">
         {view.stats.folded > 0 ? (

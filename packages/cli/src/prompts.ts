@@ -1,6 +1,7 @@
 // Prompts and output schemas shared by every LLM-backed provider (Claude API, Claude Code).
 import * as z from 'zod/v4';
 import type { NodeContext } from './enrich.ts';
+import type { BriefInput } from './brief.ts';
 import type { GuideInput } from './guide.ts';
 import type { GroupInput, PurposeInput } from './purpose.ts';
 import type { CodeGraph, FnNode, NodeEnrichment } from './types.ts';
@@ -61,7 +62,7 @@ export function renderContext(ctx: NodeContext): string {
     node.after ? `### After\n${fence(node.after.source)}` : '',
     `### Direct callers\n${list(ctx.callers)}`,
     `### Direct callees\n${list(ctx.callees)}`,
-    `### Graph statistics\n- transitive callers: ${node.transitiveCallers}\n- files reached: ${ctx.modulesReached}\n- exported: ${node.exported}\n- dangling call sites (deleted target): ${ctx.danglingCallers}`,
+    `### Graph statistics\n- transitive callers: ${node.transitiveCallers} (${ctx.untouchedCallers} outside this change)\n- lines changed: ${ctx.linesChanged}\n- files reached: ${ctx.modulesReached}\n- exported: ${node.exported}\n- dangling call sites (deleted target): ${ctx.danglingCallers}`,
     `### Heuristic analysis\n${JSON.stringify({ contract: heuristic.contract, invariants: heuristic.invariants, blastRadius: heuristic.blastRadius, reasons: heuristic.reasons }, null, 2)}`,
   ]
     .filter(Boolean)
@@ -166,3 +167,52 @@ export const toGuide = (out: z.infer<typeof GuideSchema>) => ({
   architecture: out.architecture,
   startHere: out.startHere.map((s) => ({ key: s.id, reason: s.reason })),
 });
+
+// ---- the review brief (a code review's landing page) ----
+
+export const BriefSchema = z.object({
+  overview: z.string().describe('2-4 plain sentences: what this change does and why, as a reviewer would explain it to a colleague.'),
+  approach: z.array(z.string()).describe('2-5 short points on how the change does it, naming the key functions in backticks.'),
+  risks: z
+    .array(z.object({ title: z.string().describe('The risk in a few words.'), detail: z.string().describe('One or two sentences: what could go wrong and for whom.'), ids: z.array(z.string()).describe('Bracketed ids of the functions involved, e.g. c2.') }))
+    .describe('0-5 concrete risks, most serious first. Only real ones grounded in the code; an empty list is fine.'),
+  watch: z.array(z.string()).describe('3-6 specific things the reviewer should check, phrased as instructions.'),
+  readingOrder: z.array(z.object({ id: z.string().describe('Bracketed id of a changed function.'), reason: z.string().describe('Why read it at this point, in one sentence.') })).describe('3-6 changed functions in the order to read them.'),
+  testing: z.string().describe('One or two sentences on how the change is tested and what is not covered.'),
+});
+
+export const BRIEF_SYSTEM = `You write the first page a reviewer sees when they open a code review.
+They want to understand the change before looking at any diff: what it does, how, what could go
+wrong, what to check, and where to start. Be concrete and grounded in the diffs and analysis given;
+name functions in backticks; no filler, no praise, no restating the title. If the author's
+description and the code disagree, say so as a risk.`;
+
+export function briefPrompt(input: BriefInput): string {
+  let budget = 40_000;
+  const changes = input.changes.map((c) => {
+    const e = c.node.enrichment;
+    const diff = (c.node.diff ?? '').slice(0, Math.max(0, Math.min(2500, budget)));
+    budget -= diff.length;
+    return [
+      `### [${c.key}] \`${c.node.qualifiedName}\` in ${c.node.file} (${c.node.status})`,
+      `blast radius ${e?.blastRadius ?? '?'}; ${c.untouchedCallers} callers outside the change${c.node.entry ? `; entry point (${c.node.entry.kind})` : ''}`,
+      e?.contract.breaking ? `breaking contract: ${e.contract.description}` : '',
+      ...(e?.invariants ?? []).filter((i) => i.status !== 'preserved').map((i) => `invariant ${i.status}: ${i.statement}`),
+      diff ? '```diff\n' + diff + '\n```' : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  });
+  return [
+    input.title ? `# ${input.title}` : '# Change under review',
+    `## Author's description\n${input.description?.trim() || '(none)'}`,
+    `## Changed functions, in suggested review order\n${changes.join('\n\n')}`,
+    input.entryPoints.length ? `## Entry points that reach the change\n${input.entryPoints.slice(0, 12).map((e) => `- ${e.kind} ${e.name} → ${e.reaches.join(', ')}`).join('\n')}` : '',
+    input.effects.length ? `## External systems touched\n${input.effects.map((e) => `- ${e.label} via ${e.changes.join(', ')}`).join('\n')}` : '',
+    `## Test files changed\n${input.testsChanged.join(', ') || '(none)'}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+export const toBrief = (out: z.infer<typeof BriefSchema>) => out;

@@ -171,6 +171,13 @@ export async function commentOnFunction(graph: CodeGraph, fn: FnNode, body: stri
   return { kind: 'conversation', url: out.html_url };
 }
 
+/** A line comment anywhere in the diff (RIGHT = the new version, LEFT = the old one). */
+export async function commentOnLine(graph: CodeGraph, path: string, line: number, side: 'LEFT' | 'RIGHT', body: string): Promise<{ url: string }> {
+  const pr = graph.meta.pr!;
+  const out = await githubSend<{ html_url: string }>('POST', `repos/${pr.repo}/pulls/${pr.number}/comments`, { body, commit_id: pr.headSha, path, line, side });
+  return { url: out.html_url };
+}
+
 export async function replyToThread(graph: CodeGraph, threadId: number, body: string): Promise<{ url: string }> {
   const pr = graph.meta.pr!;
   const out = await githubSend<{ html_url: string }>('POST', `repos/${pr.repo}/pulls/${pr.number}/comments/${threadId}/replies`, { body });
