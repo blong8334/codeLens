@@ -25,6 +25,16 @@ export interface InspectOptions {
 
 
 export async function inspect(dir: string, opts: InspectOptions): Promise<CodeGraph> {
+  // Whatever happens below, the snapshot's git process is closed.
+  const open: { close(): void }[] = [];
+  try {
+    return await inspectWith(dir, opts, open);
+  } finally {
+    for (const s of open) s.close();
+  }
+}
+
+async function inspectWith(dir: string, opts: InspectOptions, open: { close(): void }[]): Promise<CodeGraph> {
   const log = opts.log ?? (() => {});
   const repo = await Repo.open(dir);
   const base = await repo.resolve(opts.base);
@@ -37,6 +47,7 @@ export async function inspect(dir: string, opts: InspectOptions): Promise<CodeGr
 
   // 1. Parse every source file at head (cached by content in the store).
   const snapshot = await openSnapshot(repo.root, head === WORKING_TREE ? WORKING_TREE : head);
+  open.push(snapshot);
   const remote = await remoteInfo(repo.root, snapshot.commit);
   const allPaths = snapshot.files.map((f) => f.path);
   const { files: headFiles, stats: loadStats } = await loadFiles(snapshot, { include: (p) => !ignored(p), store: opts.store });

@@ -175,7 +175,9 @@ class BlobReader {
     this.buffered = buf.length;
   }
 
+  /** Safe to call more than once. */
   close() {
     this.proc?.stdin?.end();
+    this.proc = null;
   }
 }
