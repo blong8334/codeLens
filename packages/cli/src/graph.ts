@@ -1,5 +1,5 @@
 import { createPatch } from 'diff';
-import { assignGroups, countAncestors, fnId, ignoreFilter, linkCalls, logParsed, makeNode } from './build.ts';
+import { assignGroups, countAncestors, fnId, ignoreFilter, linkCalls, logParsed, makeNode, productionCallers, typeCheck } from './build.ts';
 import { loadConfig } from './config.ts';
 import { remoteInfo, Repo, WORKING_TREE } from './git.ts';
 import { detectEntry } from './hierarchy.ts';
@@ -15,6 +15,8 @@ export interface InspectOptions {
   maxDepth: number;
   /** Emit the entire repository graph instead of just the impacted subgraph. */
   full: boolean;
+  /** Type-aware resolution for TypeScript/JavaScript (default on). */
+  types?: boolean;
   /** Parse cache; omit to parse everything from scratch. */
   store?: Store;
   log?: (msg: string) => void;
@@ -37,7 +39,6 @@ export async function inspect(dir: string, opts: InspectOptions): Promise<CodeGr
   const remote = await remoteInfo(repo.root, snapshot.commit);
   const allPaths = snapshot.files.map((f) => f.path);
   const { files: headFiles, stats: loadStats } = await loadFiles(snapshot, { include: (p) => !ignored(p), store: opts.store });
-  snapshot.close();
   logParsed(log, headFiles, loadStats);
 
   // 2. Classify function-level changes by diffing the base and head versions of each changed file.
@@ -94,7 +95,9 @@ export async function inspect(dir: string, opts: InspectOptions): Promise<CodeGr
   }
   for (const { file, fn } of deleted) addFn(file, fn, 'deleted');
 
-  const { graph, edges, sinks } = linkCalls(nodes, headFiles, config);
+  const typed = opts.types === false ? undefined : await typeCheck(snapshot, headFiles, nodes, log);
+  snapshot.close();
+  const { graph, edges, sinks } = linkCalls(nodes, headFiles, config, typed);
 
   // 4. Blast radius traversal: walk callers outward from every changed function.
   const changedIds = [...nodes.values()].filter((n) => n.status !== 'unchanged').map((n) => n.id);
@@ -127,7 +130,7 @@ export async function inspect(dir: string, opts: InspectOptions): Promise<CodeGr
   }
 
   for (const n of nodes.values()) {
-    n.entry = detectEntry(n, decorators.get(n.id) ?? [], graph.inDegree(n.id), config);
+    n.entry = detectEntry(n, decorators.get(n.id) ?? [], productionCallers(graph, n.id), config);
   }
 
   // 5. Prune to the impacted subgraph: changes plus callers and callees within maxDepth.

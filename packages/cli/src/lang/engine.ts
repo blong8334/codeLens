@@ -8,6 +8,8 @@ export interface ExtractedCall {
   member: boolean;
   /** Receiver expression for member calls, e.g. `this.db` in `this.db.query()`. */
   object?: string;
+  /** 1-based line of the called name, to match calls with a type checker's view of them. */
+  line?: number;
 }
 
 export interface ExtractedFn {
@@ -118,7 +120,7 @@ export function extract(spec_: LanguageSpec, language: Parser.Language, root: Sy
     if (call) {
       const name = cap('call.name');
       const receiver = cap('call.receiver');
-      if (name) calls.push({ node: call, call: { name: name.text, member: !!receiver, object: receiver?.text.slice(0, 80) } });
+      if (name) calls.push({ node: call, call: { name: name.text, member: !!receiver, object: receiver?.text.slice(0, 80), line: name.startPosition.row + 1 } });
       continue;
     }
     const imp = cap('import');

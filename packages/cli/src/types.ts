@@ -98,6 +98,8 @@ export interface CallEdge {
   target: string; // callee
   count: number;
   confidence: 'high' | 'low';
+  /** Resolved by a type checker rather than by name. */
+  typed?: boolean;
   /** The callee was deleted in this change but the call site remains. */
   dangling?: boolean;
 }
