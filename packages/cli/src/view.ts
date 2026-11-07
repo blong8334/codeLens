@@ -12,8 +12,12 @@ import { createServer, type Server } from 'node:http';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// Published: the built canvas ships next to the bundle (dist/web). In the repo: packages/web,
+// rebuilt on demand when its sources change.
+const PACKAGED = fileURLToPath(new URL('./web/', import.meta.url));
 const WEB = fileURLToPath(new URL('../../web/', import.meta.url));
-const DIST = join(WEB, 'dist');
+const IS_PACKAGED = existsSync(join(PACKAGED, 'index.html'));
+const DIST = IS_PACKAGED ? PACKAGED.replace(/[\\/]$/, '') : join(WEB, 'dist');
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -27,6 +31,7 @@ const TYPES: Record<string, string> = {
 
 /** Build the canvas when there is no build yet, or its sources are newer than the build. */
 function ensureBuilt(log: (m: string) => void) {
+  if (IS_PACKAGED || !existsSync(join(WEB, 'src'))) return;
   const built = join(DIST, 'index.html');
   const newest = (dir: string): number =>
     Math.max(0, ...readdirSync(dir, { withFileTypes: true }).map((e) => (e.isDirectory() ? newest(join(dir, e.name)) : statSync(join(dir, e.name)).mtimeMs)));
@@ -103,9 +108,12 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL, ctx: { g
   if (!hosts.includes(req.headers.host ?? '')) return send(403, { error: 'wrong host' });
   if (req.headers.origin && !hosts.some((h) => req.headers.origin === `http://${h}`)) return send(403, { error: 'wrong origin' });
 
-  const { canPostToGitHub } = await import('./github.ts');
+  const { canPostToGitHub, viewerLogin } = await import('./github.ts');
   const graph = JSON.parse(await readFile(ctx.graphPath, 'utf8')) as CodeGraph;
-  if (url.pathname === '/api/session' && req.method === 'GET') return send(200, { pr: !!graph.meta.pr, canPost: !!graph.meta.pr && canPostToGitHub(), marks: !!graph.review });
+  if (url.pathname === '/api/session' && req.method === 'GET') {
+    const canPost = !!graph.meta.pr && canPostToGitHub();
+    return send(200, { pr: !!graph.meta.pr, canPost, login: canPost ? await viewerLogin() : undefined, marks: !!graph.review });
+  }
 
   // "I'm good with this file" marks: CodeLens's own, so they work for any platform (or none).
   if (url.pathname.startsWith('/api/review/')) {
@@ -125,6 +133,12 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL, ctx: { g
           : graph.review.files.find((f) => f.path === body.path) && { key: String(body.path), fingerprint: graph.review.files.find((f) => f.path === body.path)!.fingerprint };
       if (!target) return send(400, { error: typeof body.fnId === 'string' ? 'not a changed function in this review' : 'not a file in this review' });
       await store.setMark(graph.review.key, reviewer, target.key, body.reviewed ? target.fingerprint : null);
+      return send(200, { reviewer, marks: await marks() });
+    }
+    if (url.pathname === '/api/review/reset' && req.method === 'POST') {
+      const denied = guardWrite(req, ctx.token);
+      if (denied) return send(403, { error: denied });
+      await store.clearMarks(graph.review.key, reviewer);
       return send(200, { reviewer, marks: await marks() });
     }
     return send(404, { error: 'not found' });

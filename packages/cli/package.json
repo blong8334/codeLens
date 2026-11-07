@@ -1,14 +1,50 @@
 {
-  "name": "@codelens/cli",
+  "name": "@blong8334/codelens",
   "version": "0.1.0",
-  "description": "Parse git diffs into enriched call graphs",
+  "description": "Visual-first code review and code exploration: impact maps, review briefs and a one-change-at-a-time review queue, for any repository or GitHub pull request.",
+  "keywords": [
+    "code-review",
+    "pull-request",
+    "call-graph",
+    "tree-sitter",
+    "visualization",
+    "github",
+    "llm"
+  ],
+  "license": "Apache-2.0",
+  "author": "Brian Long",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/blong8334/codeLens.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/blong8334/codeLens#readme",
+  "type": "module",
+  "bin": {
+    "codelens": "bin/codelens.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "inspect": "tsx src/index.ts inspect",
     "enrich": "tsx src/index.ts enrich",
     "typecheck": "tsc --noEmit",
-    "test": "node --liftoff-only --import tsx --test test/*.test.ts"
+    "test": "node --liftoff-only --import tsx --test test/*.test.ts",
+    "build": "node --import tsx scripts/build.mjs",
+    "prepack": "npm run build && cp ../../README.md ../../LICENSE ../../NOTICE .",
+    "postpack": "rm -f README.md LICENSE NOTICE"
   },
-  "type": "module",
   "dependencies": {
     "@anthropic-ai/sdk": "^1.4.0",
     "commander": "^15.0.0",
@@ -26,10 +62,8 @@
     "@types/diff": "^7.0.2",
     "@types/node": "^26.6.6",
     "@types/pg": "^8.23.1",
+    "esbuild": "^0.25.12",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
-  },
-  "bin": {
-    "codelens": "bin/codelens.js"
   }
 }

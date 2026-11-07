@@ -685,3 +685,16 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 0 5px; border: 1px sol
 .undo-bar .link { color: var(--accent); font-weight: 700; }
 .undo-bar .icon-btn { color: inherit; opacity: 0.7; }
 .undo-bar kbd { opacity: 0.7; }
+.queue-list-tools { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.reset-link { color: var(--muted); }
+.reset-link:hover { color: var(--del-fg); }
+.reset-confirm { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12.5px; padding: 6px 8px; border: 1px solid var(--del-fg); border-radius: 8px; background: var(--del-bg); }
+.btn-danger { background: var(--del-fg); border-color: var(--del-fg); color: #fff; }
+.approve-btn { width: 100%; justify-content: center; }
+.approve-btn.approve-ready { background: var(--add-fg); border-color: var(--add-fg); }
+.approve-remaining { font-weight: 500; opacity: 0.75; }
+.approve-box { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: var(--surface-2); }
+.approve-warn { color: var(--medium); }
+.approve-done { font-size: 13px; font-weight: 600; color: var(--add-fg); }
+.approve-done a { color: inherit; }
+.approve-note { line-height: 1.4; }

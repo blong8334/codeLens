@@ -15,7 +15,20 @@ Every function, file, module, and system carries a short *what / why* summary.
 git diff + Tree-sitter ─▶ call graph JSON ─▶ enrichment (heuristic | Claude) ─▶ React Flow canvas
 ```
 
-## Quick start
+## Install
+
+```bash
+npx @blong8334/codelens pr https://github.com/owner/repo/pull/123    # review a PR, no install
+npm install -g @blong8334/codelens                                    # or install the `codelens` command
+codelens explore ~/code/some-repo --open
+```
+
+Requires Node.js 22.13 or later and git. Models are optional:
+- **Claude Code subscription:** `-p claude-code`.
+- **Anthropic API key:** `-p claude`.
+- **Any OpenAI-compatible endpoint:** `-p openai`. This includes a local Ollama.
+
+## Quick start (from this repository)
 
 ```bash
 npm install
@@ -372,3 +385,16 @@ scripts/                demo repo generator
 - The per-change risk analysis (`enrichNode`) is not cached yet; parses and descriptions are.
 - A function's *why* is cached with its own source, so it can go stale when only its callers change.
 - Large graphs (thousands of nodes) need the planned PixiJS renderer. React Flow is comfortable up to a few hundred.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+## Releasing
+
+```bash
+npm run pack       # builds packages/cli (bundle + canvas) and writes the .tgz npm would publish
+npm publish -w @blong8334/codelens
+```
+
+`prepack` builds the CLI bundle and the canvas into `packages/cli/dist`, and copies README, LICENSE and NOTICE in. Local graph files are never included.

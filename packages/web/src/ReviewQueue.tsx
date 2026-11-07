@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { displayName, ENTRY_LABEL, isDone, isTest, riskLevel, type FnNode, type Index } from './data.ts';
 import { DiffTable, functionHunks, hunksFor, OutdatedThreads, parseHunks, SplitSwitch, useSplitView } from './DiffViewer.tsx';
-import { FunctionDiscussion, useDiscussion } from './Discussion.tsx';
+import { ApproveReview, FunctionDiscussion, useDiscussion } from './Discussion.tsx';
 import { codeLinks } from './links.ts';
-import { ReviewProgress, useMarks, type MarkState } from './Marks.tsx';
+import { ResetMarks, ReviewProgress, useMarks, type MarkState } from './Marks.tsx';
 import { NavButtons, Prose, type NavControls } from './Panel.tsx';
 import { RiskBar, StatusBadge } from './nodes.tsx';
 import type { ReviewFile } from '../../cli/src/types.ts';
@@ -134,9 +134,13 @@ export function ReviewQueue({ ix, nav, at, onAt, onMap, onDiff }: Props) {
         <div className="queue-list-head">
           <NavButtons nav={nav} />
           <ReviewProgress />
-          <label className="hide-done">
-            <input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} /> hide done
-          </label>
+          {ix.graph.meta.pr && <ApproveReview author={ix.graph.meta.pr.author} complete={queue.every(done)} remaining={queue.filter((q) => !done(q)).length} />}
+          <div className="queue-list-tools">
+            <label className="hide-done">
+              <input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} /> hide done
+            </label>
+            <ResetMarks />
+          </div>
         </div>
         {SECTIONS.map((section) => {
           const items = queue.filter((q) => q.section === section && (!hideDone || !done(q) || q.key === current.key));

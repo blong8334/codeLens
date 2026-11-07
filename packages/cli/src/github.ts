@@ -69,6 +69,12 @@ async function fetchJson(path: string): Promise<unknown> {
 /** POST / PATCH / PUT a JSON body to a GitHub REST path, as the signed-in user. */
 export const canPostToGitHub = () => hasGh() || !!token();
 
+let login: Promise<string | undefined> | undefined;
+/** Who CodeLens posts as (for "you can't approve your own pull request"), or undefined if unknown. */
+export function viewerLogin(): Promise<string | undefined> {
+  return (login ??= githubApi<{ login: string }>('user').then((u) => u.login, () => undefined));
+}
+
 export async function githubSend<T>(method: 'POST' | 'PATCH' | 'PUT', path: string, body: unknown): Promise<T> {
   if (hasGh()) return JSON.parse(await run('gh', ['api', '-X', method, path, '--input', '-'], JSON.stringify(body))) as T;
   if (!token()) throw new Error('to post to GitHub, sign in with `gh auth login` or set GITHUB_TOKEN');

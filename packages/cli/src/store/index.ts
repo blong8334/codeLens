@@ -43,6 +43,8 @@ export interface Store {
   getMarks(review: string, reviewer: string): Promise<Map<string, { fingerprint: string; markedAt: string }>>;
   /** Mark a file reviewed at this fingerprint, or clear the mark with null. */
   setMark(review: string, reviewer: string, path: string, fingerprint: string | null): Promise<void>;
+  /** Clear all of a reviewer's marks on one review (start the review over). */
+  clearMarks(review: string, reviewer: string): Promise<void>;
   stats(): Promise<{ parses: number; descriptions: number; snapshots: number }>;
   close(): Promise<void>;
 }

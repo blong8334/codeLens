@@ -23,6 +23,8 @@ interface MarksValue {
   fnsByFile: Map<string, string[]>;
   progress: Progress;
   loaded: boolean;
+  /** Clear every mark on this review: start over. */
+  reset: () => void;
   error?: string;
 }
 
@@ -45,6 +47,7 @@ const Ctx = createContext<MarksValue>({
   fnsByFile: new Map(),
   progress: NO_PROGRESS,
   loaded: false,
+  reset: () => {},
 });
 export const useMarks = () => useContext(Ctx);
 
@@ -140,6 +143,28 @@ export function MarksProvider({ graph, children }: { graph: CodeGraph; children:
     },
     [review, server],
   );
+  const reset = useCallback(() => {
+    if (!review) return;
+    setMarks({});
+    if (!server) {
+      try {
+        localStorage.removeItem(localKey(review.key));
+      } catch {
+        // Nothing stored.
+      }
+      return;
+    }
+    const seq = ++latest.current;
+    saving.current = saving.current.then(async () => {
+      try {
+        const r = await call<{ marks: Marks }>('/api/review/reset', {});
+        if (seq === latest.current) setMarks(r.marks);
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    });
+  }, [review, server]);
+
   const fileMark = (path: string, on: boolean): Change => ({ key: path, fingerprint: byPath.get(path)?.fingerprint, on, body: { path, reviewed: on } });
   const fnMark = (id: string, on: boolean): Change => ({ key: id, fingerprint: fnPrints[id], on, body: { fnId: id, reviewed: on } });
 
@@ -197,7 +222,7 @@ export function MarksProvider({ graph, children }: { graph: CodeGraph; children:
   }, [review, fnPrints, accepted, reviewed, fnsByFile, fnLines]);
 
   return (
-    <Ctx.Provider value={{ enabled: !!review, files: review?.files ?? [], state, toggle, fnState, toggleFn, reviewed, accepted, fnsByFile, progress, loaded, error }}>{children}</Ctx.Provider>
+    <Ctx.Provider value={{ enabled: !!review, files: review?.files ?? [], state, toggle, fnState, toggleFn, reviewed, accepted, fnsByFile, progress, loaded, reset, error }}>{children}</Ctx.Provider>
   );
 }
 
@@ -212,6 +237,36 @@ export function MarkBox({ path, label = true }: { path: string; label?: boolean 
       <input type="checkbox" disabled={!loaded} checked={s === 'reviewed'} onChange={(e) => toggle(path, e.target.checked)} />
       {label && <span>{s === 'reviewed' ? (own === 'reviewed' ? 'File reviewed' : 'All changes accepted') : s === 'stale' ? 'Changed since you reviewed' : "I'm good with this file"}</span>}
     </label>
+  );
+}
+
+/** "Reset review": clear every check and acceptance, after an in-page confirmation. */
+export function ResetMarks() {
+  const { enabled, progress, reset, loaded } = useMarks();
+  const [confirming, setConfirming] = useState(false);
+  const count = progress.changes.done + progress.files.done;
+  if (!enabled || !loaded) return null;
+  if (!count && !confirming) return null;
+  return confirming ? (
+    <span className="reset-confirm" role="alert">
+      Clear all {progress.changes.done} accepted change{progress.changes.done === 1 ? '' : 's'} and {progress.files.done} checked file{progress.files.done === 1 ? '' : 's'}?
+      <button
+        className="btn btn-small btn-danger"
+        onClick={() => {
+          reset();
+          setConfirming(false);
+        }}
+      >
+        Reset
+      </button>
+      <button className="btn btn-small" onClick={() => setConfirming(false)}>
+        Cancel
+      </button>
+    </span>
+  ) : (
+    <button className="link small reset-link" onClick={() => setConfirming(true)} title="Clear every accepted change and checked file in this review">
+      Reset review
+    </button>
   );
 }
 
@@ -287,6 +342,7 @@ export function FilesChecklist({ onOpen, onDiff }: { onOpen?: (path: string) => 
         <label className="hide-done">
           <input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} /> hide reviewed
         </label>
+        <ResetMarks />
       </div>
       {error && <p className="compose-result err">{error}</p>}
       <ul className="file-rows">

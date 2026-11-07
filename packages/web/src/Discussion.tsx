@@ -23,6 +23,8 @@ interface DiscussionState {
   canPost: boolean;
   /** The local server can fetch fresh discussion. */
   live: boolean;
+  /** The GitHub account posts go out as. */
+  login?: string;
   refreshing: boolean;
   refresh: () => Promise<void>;
   comment: (fnId: string, body: string) => Promise<string>;
@@ -49,7 +51,7 @@ const REFRESH_MS = 60_000;
 export function DiscussionProvider({ graph, onChange, children }: { graph: CodeGraph; onChange: (d: PrDiscussion) => void; children: ReactNode }) {
   const pr = graph.meta.pr;
   const [discussion, setDiscussion] = useState<PrDiscussion | undefined>(pr?.discussion);
-  const [session, setSession] = useState({ live: false, canPost: false });
+  const [session, setSession] = useState<{ live: boolean; canPost: boolean; login?: string }>({ live: false, canPost: false });
   const [refreshing, setRefreshing] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -67,10 +69,10 @@ export function DiscussionProvider({ graph, onChange, children }: { graph: CodeG
   useEffect(() => {
     if (!pr) return;
     let stop = false;
-    call<{ pr: boolean; canPost: boolean }>('/api/session')
+    call<{ pr: boolean; canPost: boolean; login?: string }>('/api/session')
       .then((s) => {
         if (stop || !s.pr) return;
-        setSession({ live: true, canPost: s.canPost });
+        setSession({ live: true, canPost: s.canPost, login: s.login });
         void refresh().catch(() => {});
       })
       .catch(() => {});
@@ -374,6 +376,59 @@ export function ReviewsSummary() {
           </a>
         ))}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Finish the review on GitHub: approve (or request changes), with an optional comment. Prominent
+ * once every change is reviewed; explains up front when GitHub won't allow it (your own PR).
+ */
+export function ApproveReview({ author, complete, remaining }: { author: string; complete: boolean; remaining: number }) {
+  const { canPost, login, review, discussion } = useDiscussion();
+  const [open, setOpen] = useState(false);
+  const [done, setDone] = useState<{ event: string; url: string } | null>(null);
+  if (!canPost) return null;
+  const mine = !!login && login.toLowerCase() === author.toLowerCase();
+  const verdict = discussion && login ? reviewVerdicts(discussion.reviews).find((r) => r.author.toLowerCase() === login.toLowerCase()) : undefined;
+  if (done)
+    return (
+      <div className="approve-done">
+        {done.event === 'APPROVE' ? '✓ Approved' : 'Changes requested'} ·{' '}
+        <a href={done.url} target="_blank" rel="noreferrer">
+          view on GitHub ↗
+        </a>
+      </div>
+    );
+  if (mine)
+    return (
+      <div className="approve-note muted small" title="GitHub does not allow approving or requesting changes on your own pull request">
+        Your pull request: GitHub doesn't let authors approve their own. Comments still work.
+      </div>
+    );
+  if (!open)
+    return (
+      <button className={`btn ${complete ? 'btn-primary approve-ready' : ''} approve-btn`} onClick={() => setOpen(true)} title={complete ? 'Everything is reviewed' : `${remaining} change${remaining === 1 ? '' : 's'} not reviewed yet`}>
+        {verdict?.state === 'APPROVED' ? '✓ You approved · review again' : complete ? '✓ Approve PR' : 'Approve PR…'}
+        {!complete && <span className="approve-remaining"> · {remaining} left</span>}
+      </button>
+    );
+  const run = (event: 'APPROVE' | 'REQUEST_CHANGES') => async (text: string) => {
+    const url = await review(event, text);
+    setDone({ event, url });
+    return url;
+  };
+  return (
+    <div className="approve-box">
+      {!complete && <div className="approve-warn small">{remaining} change{remaining === 1 ? ' is' : 's are'} not reviewed yet.</div>}
+      <Compose
+        placeholder="Optional comment for the author…"
+        actions={[
+          { label: 'Approve', primary: true, allowEmpty: true, run: run('APPROVE') },
+          { label: 'Request changes', run: run('REQUEST_CHANGES') },
+          { label: 'Cancel', allowEmpty: true, run: async () => (setOpen(false), '') },
+        ]}
+      />
     </div>
   );
 }

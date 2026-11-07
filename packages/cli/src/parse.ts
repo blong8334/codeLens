@@ -53,13 +53,18 @@ export async function parseFile(path: string, source: string): Promise<Extracted
  * Changes whenever the extraction code does (the engine, any language plugin, this file), so
  * cached parses from an older CodeLens are never reused.
  */
-export const EXTRACTOR_VERSION: string = (() => {
+// The published bundle has no source files to hash: the build stamps the version in instead.
+declare const __CODELENS_EXTRACTOR__: string | undefined;
+export const EXTRACTOR_VERSION: string = typeof __CODELENS_EXTRACTOR__ === 'string' ? __CODELENS_EXTRACTOR__ : extractorVersionFromSources();
+
+/** Hash of the extraction code: the language plugins and this file. */
+export function extractorVersionFromSources(): string {
   const h = createHash('sha1');
   const langDir = new URL('./lang/', import.meta.url);
   for (const name of readdirSync(langDir).sort()) if (name.endsWith('.ts')) h.update(readFileSync(new URL(name, langDir)));
   h.update(readFileSync(new URL(import.meta.url)));
   return h.digest('hex').slice(0, 12);
-})();
+}
 
 export const MAX_FILE_BYTES = 512 * 1024;
 

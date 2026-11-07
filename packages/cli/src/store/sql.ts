@@ -145,6 +145,10 @@ create table if not exists ${this.t('snapshot_fns')} (snapshot bigint not null, 
     );
   }
 
+  async clearMarks(review: string, reviewer: string) {
+    await this.db.run(`delete from ${this.t('review_marks')} where review = ? and reviewer = ?`, [review, reviewer]);
+  }
+
   async listSnapshots(repo?: string) {
     const rows = repo
       ? await this.db.all(`select * from ${this.t('snapshots')} where repo = ? order by id desc`, [repo])

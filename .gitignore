@@ -7,3 +7,5 @@ packages/web/public/codelens.*.json
 .env
 .env.*
 .DS_Store
+packages/cli/dist/
+*.tgz
