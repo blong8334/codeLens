@@ -30,16 +30,26 @@ It also **explores** whole codebases: a written guide to an unfamiliar package, 
 
 ## Install
 
+Review any GitHub pull request, with no install. The brief, risks and explanations are written by the model you choose:
+
 ```bash
-npx @blong8334/codelens pr https://github.com/owner/repo/pull/123    # review a PR, no install
-npm install -g @blong8334/codelens                                    # or install the `codelens` command
-codelens explore ~/code/some-repo --open
+# With your Claude Code subscription (no API key needed)
+npx @blong8334/codelens pr https://github.com/owner/repo/pull/123 -p claude-code
+
+# With an Anthropic API key
+ANTHROPIC_API_KEY=… npx @blong8334/codelens pr <url> -p claude
+
+# With OpenAI, or any OpenAI-compatible endpoint such as a local Ollama
+OPENAI_API_KEY=… npx @blong8334/codelens pr <url> -p openai -m gpt-4.1-mini
+npx @blong8334/codelens pr <url> -p openai -m llama3.1 --base-url http://localhost:11434/v1
+
+# No model: offline analysis only (call graph, contracts, risks), with plainer write-ups
+npx @blong8334/codelens pr <url>
 ```
 
-Requires Node.js 22.13 or later and git. Models are optional:
-- **Claude Code subscription:** `-p claude-code`.
-- **Anthropic API key:** `-p claude`.
-- **Any OpenAI-compatible endpoint:** `-p openai`. This includes a local Ollama.
+Or install the `codelens` command: `npm install -g @blong8334/codelens`, then for example `codelens explore ~/code/some-repo -p claude-code --open`.
+
+Requires Node.js 22.13 or later and git. The first run with a model takes a minute or two on a large PR. After that, everything is cached by content, so later runs only analyze what changed.
 
 ## Quick start (from this repository)
 
