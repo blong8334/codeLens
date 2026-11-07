@@ -77,7 +77,11 @@ export function linkCalls(nodes: Map<string, FnNode>, files: Map<string, Extract
         const existing = edges.get(key);
         if (existing) {
           existing.count++;
-          if (viaTypes) existing.typed = true;
+          // The checker confirming a name-matched edge makes it certain, whichever came first.
+          if (viaTypes) {
+            existing.typed = true;
+            existing.confidence = 'high';
+          }
           return;
         }
         edges.set(key, {

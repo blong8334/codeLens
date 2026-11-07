@@ -37,8 +37,19 @@ const ENTRY_ORDER: EntryKind[] = ['main', 'route', 'cli', 'job', 'config', 'publ
 const MAX_HOTSPOTS = 25;
 
 export async function explore(dir: string, opts: ExploreOptions = {}): Promise<ExploreResult> {
+  // Whatever happens below, the snapshot's git process is closed.
+  const open: { close(): void }[] = [];
+  try {
+    return await exploreWith(dir, opts, open);
+  } finally {
+    for (const s of open) s.close();
+  }
+}
+
+async function exploreWith(dir: string, opts: ExploreOptions, open: { close(): void }[]): Promise<ExploreResult> {
   const log = opts.log ?? (() => {});
   const snapshot = await openSnapshot(dir, opts.ref ?? WORKING_TREE);
+  open.push(snapshot);
   // Compare real paths: git reports the resolved root (macOS /var → /private/var, symlinked homes).
   const scope = relative(await realpath(snapshot.root), await realpath(resolve(dir))).split(sep).join('/');
   if (scope.startsWith('..')) throw new Error(`${dir} is outside ${snapshot.root}`);

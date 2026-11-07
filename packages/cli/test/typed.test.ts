@@ -105,3 +105,46 @@ test('typed: a review type-checks the reviewed commit, not the working tree', as
   assert.ok(targets.includes('src/gateways.ts#Paypal.charge'), targets.join(', '));
   assert.ok(!targets.includes('src/gateways.ts#Stripe.charge'));
 });
+
+test('typed: a checker-confirmed edge is upgraded even when name matching created it first', async () => {
+  const { graph } = await explore(
+    dir({
+      'src/svc.ts': `export class Svc {
+  helper() {
+    return 1;
+  }
+}
+`,
+      // In another file, name matching only reaches Svc.helper with low confidence.
+      'src/use.ts': `import { Svc } from './svc';
+
+export function use(loose: any, svc: Svc) {
+  loose.helper();
+  return svc.helper();
+}
+`,
+    }),
+  );
+  const edge = graph.edges.find((e) => e.source.endsWith('#use') && e.target.endsWith('#Svc.helper'))!;
+  assert.ok(edge, 'edge exists');
+  assert.equal(edge.count, 2);
+  assert.equal(edge.typed, true);
+  assert.equal(edge.confidence, 'high', 'the typed call upgrades the earlier name-matched one');
+});
+
+test('typed: tsconfig extends, per-package configs, and paths without baseUrl', async () => {
+  const { graph } = await explore(
+    dir({
+      'tsconfig.base.json': JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@shared/*': ['shared/*'] } } }),
+      'shared/money.ts': 'export function format(n: number) {\n  return n.toFixed(2);\n}\n',
+      'packages/app/tsconfig.json': JSON.stringify({ extends: '../../tsconfig.base.json' }),
+      'packages/app/src/checkout.ts': "import { format } from '@shared/money';\n\nexport function total(n: number) {\n  return format(n);\n}\n",
+      'packages/web/tsconfig.json': JSON.stringify({ compilerOptions: { paths: { '~/*': ['./src/*'] } } }),
+      'packages/web/src/util.ts': 'export function slug(s: string) {\n  return s.toLowerCase();\n}\n',
+      'packages/web/src/page.ts': "import { slug } from '~/util';\n\nexport function title(s: string) {\n  return slug(s);\n}\n",
+    }),
+  );
+  const typedEdge = (from: string, to: string) => graph.edges.find((e) => e.source.endsWith(`#${from}`) && e.target.endsWith(`#${to}`));
+  assert.equal(typedEdge('total', 'format')?.typed, true, 'alias inherited through extends');
+  assert.equal(typedEdge('title', 'slug')?.typed, true, 'paths resolve without a baseUrl, per package');
+});
