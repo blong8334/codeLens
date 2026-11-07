@@ -125,6 +125,12 @@ export function displayName(fn: FnNode): string {
   return fn.qualifiedName === '(top level)' ? `${fn.file.slice(fn.file.lastIndexOf('/') + 1)} · top level` : fn.qualifiedName;
 }
 
+/** Test directories and test-file names across ecosystems (the CLI's rules, for the canvas). */
+const TEST_PATH = /(^|\/)(__tests__|tests?|spec|specs)\/|[._-](test|spec)s?\.[^/]+$|_test\.(go|py|rb|exs?)$|(^|\/)test_[^/]+\.py$|(Test|Tests|Spec)\.(java|kt|scala|cs|swift|php)$/;
+
+/** Test code: a test entry point, or anything in a test file (helpers and fixtures included). */
+export const isTest = (fn: FnNode) => fn.entry?.kind === 'test' || TEST_PATH.test(fn.file);
+
 export const isChanged = (n: FnNode) => n.status !== 'unchanged';
 export const isBreaking = (n: FnNode | undefined) => !!n?.enrichment?.contract.breaking;
 

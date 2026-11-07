@@ -1,5 +1,5 @@
 import { MarkerType, type Edge, type Node } from '@xyflow/react';
-import { GROUP_KIND_FOR_LOD, type FnNode, type Index, type Lod, type Selection } from './data.ts';
+import { GROUP_KIND_FOR_LOD, isTest, type FnNode, type Index, type Lod, type Selection } from './data.ts';
 import { SIZE, type MapItem } from './impact.ts';
 import { layout } from './layout.ts';
 
@@ -34,7 +34,7 @@ export function buildOverview(ix: Index, lod: Lod, expanded: Set<string>, select
   let items = new Map<string, MapItem>();
   const itemOf = new Map<string, string>();
 
-  const shown = showTests ? ix.graph.nodes : ix.graph.nodes.filter((fn) => fn.entry?.kind !== 'test');
+  const shown = showTests ? ix.graph.nodes : ix.graph.nodes.filter((fn) => !isTest(fn));
   for (const fn of shown) {
     let l = level;
     let gid = groupAt(fn, l);

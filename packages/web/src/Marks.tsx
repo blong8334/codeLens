@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { CodeGraph } from './data.ts';
 import { call } from './Discussion.tsx';
 import type { ReviewFile } from '../../cli/src/types.ts';
@@ -68,6 +68,8 @@ export function MarksProvider({ graph, children }: { graph: CodeGraph; children:
   const [server, setServer] = useState(false);
   // Controls wait for saved marks, so a click never acts on a not-yet-loaded state.
   const [loaded, setLoaded] = useState(false);
+  const saving = useRef<Promise<void>>(Promise.resolve());
+  const latest = useRef(0);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
@@ -91,36 +93,6 @@ export function MarksProvider({ graph, children }: { graph: CodeGraph; children:
   const state = useCallback((path: string) => markState(path, byPath.get(path)?.fingerprint), [marks, byPath]); // eslint-disable-line react-hooks/exhaustive-deps
   const fnState = useCallback((id: string) => markState(id, fnPrints[id]), [marks, fnPrints]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /** Set or clear one mark (a file path, or a function id): optimistic, then the server's answer. */
-  const setMark = useCallback(
-    (key: string, fingerprint: string | undefined, on: boolean, body: Record<string, unknown>) => {
-      if (!review || !fingerprint) return;
-      setMarks((m) => {
-        const next = { ...m };
-        if (on) next[key] = { fingerprint };
-        else delete next[key];
-        if (!server) {
-          try {
-            localStorage.setItem(localKey(review!.key), JSON.stringify(next));
-          } catch {
-            // Storage unavailable: the mark lasts for this page only.
-          }
-        }
-        return next;
-      });
-      if (server)
-        call<{ marks: Marks }>('/api/review/mark', body)
-          .then((r) => {
-            setMarks(r.marks);
-            setError(undefined);
-          })
-          .catch((e: Error) => setError(e.message));
-    },
-    [review, server],
-  );
-  const toggle = useCallback((path: string, on: boolean) => setMark(path, byPath.get(path)?.fingerprint, on, { path, reviewed: on }), [setMark, byPath]);
-  const toggleFn = useCallback((id: string, on: boolean) => setMark(id, fnPrints[id], on, { fnId: id, reviewed: on }), [setMark, fnPrints]);
-
   const fnsByFile = useMemo(() => {
     const out = new Map<string, string[]>();
     for (const id of Object.keys(fnPrints)) {
@@ -129,6 +101,68 @@ export function MarksProvider({ graph, children }: { graph: CodeGraph; children:
     }
     return out;
   }, [fnPrints]);
+
+  type Change = { key: string; fingerprint: string | undefined; on: boolean; body: Record<string, unknown> };
+  /** Apply several marks at once: optimistic locally, then saved in order on the server. */
+  const apply = useCallback(
+    (changes: Change[]) => {
+      const valid = changes.filter((c) => c.fingerprint);
+      if (!review || !valid.length) return;
+      setMarks((m) => {
+        const next = { ...m };
+        for (const c of valid) {
+          if (c.on) next[c.key] = { fingerprint: c.fingerprint! };
+          else delete next[c.key];
+        }
+        if (!server) {
+          try {
+            localStorage.setItem(localKey(review!.key), JSON.stringify(next));
+          } catch {
+            // Storage unavailable: the marks last for this page only.
+          }
+        }
+        return next;
+      });
+      if (!server) return;
+      // Saves go out one at a time, in order, and only the newest batch's answer is shown: a slow
+      // older response can never overwrite a newer accept or undo.
+      const seq = ++latest.current;
+      saving.current = saving.current.then(async () => {
+        try {
+          let last: Marks | undefined;
+          for (const c of valid) last = (await call<{ marks: Marks }>('/api/review/mark', c.body)).marks;
+          if (last && seq === latest.current) setMarks(last);
+          setError(undefined);
+        } catch (e) {
+          setError((e as Error).message);
+        }
+      });
+    },
+    [review, server],
+  );
+  const fileMark = (path: string, on: boolean): Change => ({ key: path, fingerprint: byPath.get(path)?.fingerprint, on, body: { path, reviewed: on } });
+  const fnMark = (id: string, on: boolean): Change => ({ key: id, fingerprint: fnPrints[id], on, body: { fnId: id, reviewed: on } });
+
+  /** Check a file off, or reopen it — which reopens all of its changes too. */
+  const toggle = useCallback(
+    (path: string, on: boolean) => apply(on ? [fileMark(path, true)] : [fileMark(path, false), ...(fnsByFile.get(path) ?? []).filter((id) => marks[id]).map((id) => fnMark(id, false))]),
+    [apply, fnsByFile, marks, byPath, fnPrints], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  /**
+   * Accept one change, or un-accept it. Un-accepting a change in a file that was checked off as a
+   * whole reopens only that change: the file's other changes stay accepted, individually.
+   */
+  const toggleFn = useCallback(
+    (id: string, on: boolean) => {
+      if (on) return apply([fnMark(id, true)]);
+      const file = id.slice(0, id.indexOf('#'));
+      if (!marks[file]) return apply([fnMark(id, false)]);
+      const others = (fnsByFile.get(file) ?? []).filter((other) => other !== id && !marks[other]);
+      apply([...others.map((other) => fnMark(other, true)), fileMark(file, false), fnMark(id, false)]);
+    },
+    [apply, fnsByFile, marks, byPath, fnPrints], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
   const accepted = useMemo(() => new Set(Object.keys(fnPrints).filter((id) => fnState(id) === 'reviewed')), [fnPrints, fnState]);
   const reviewed = useMemo(
     () =>
@@ -183,9 +217,11 @@ export function MarkBox({ path, label = true }: { path: string; label?: boolean 
 
 /** "Accept change": approve one changed function, not its whole file. */
 export function AcceptButton({ fnId }: { fnId: string }) {
-  const { enabled, fnState, toggleFn, fnsByFile, loaded } = useMarks();
+  const { enabled, fnState, toggleFn, fnsByFile, loaded, reviewed } = useMarks();
   if (!enabled || !fnsByFile.size || ![...fnsByFile.values()].some((ids) => ids.includes(fnId))) return null;
-  const s = fnState(fnId);
+  // Done by its own mark, or because its whole file was checked off.
+  const own = fnState(fnId);
+  const s: MarkState = own === 'stale' ? 'stale' : reviewed.has(fnId.slice(0, fnId.indexOf('#'))) ? 'reviewed' : own;
   return (
     <button
       disabled={!loaded}
@@ -193,7 +229,15 @@ export function AcceptButton({ fnId }: { fnId: string }) {
       onClick={() => toggleFn(fnId, s !== 'reviewed')}
       title={s === 'reviewed' ? 'Undo: mark this change as not reviewed' : s === 'stale' ? 'You accepted this change, but it changed since' : 'Approve this change only (not the rest of its file)'}
     >
-      {s === 'reviewed' ? '✓ Accepted' : s === 'stale' ? '↻ Changed since accepted: accept again' : '✓ Accept change'}
+      {s === 'reviewed' ? (
+        <>
+          ✓ Accepted <span className="undo-hint">· undo</span>
+        </>
+      ) : s === 'stale' ? (
+        '↻ Changed since accepted: accept again'
+      ) : (
+        '✓ Accept change'
+      )}
     </button>
   );
 }

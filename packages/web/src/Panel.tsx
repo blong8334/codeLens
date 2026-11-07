@@ -17,6 +17,8 @@ interface Props {
   onLayer: (layer: Layer, fnId?: string) => void;
   /** Open the full-screen diff of a file (optionally at a function). */
   onOpenDiff?: (path: string, fnId?: string) => void;
+  /** Open the review queue at a changed function. */
+  onReview?: (fnId: string) => void;
   nav?: NavControls;
 }
 
@@ -435,6 +437,11 @@ function FnPanel(props: Props & { fn: FnNode }) {
       <PurposeBlock fn={fn} />
       {(ix.graph.review?.files.some((f) => f.path === fn.file) || fn.diff) && props.onOpenDiff && (
         <div className="diff-launch">
+          {props.onReview && fn.status !== 'unchanged' && (
+            <button className="btn btn-primary" onClick={() => props.onReview!(fn.id)} title="Open this change in the review queue (r)">
+              Review this change
+            </button>
+          )}
           <AcceptButton fnId={fn.id} />
           <button className="btn" onClick={() => props.onOpenDiff!(fn.file, fn.id)} title="Full-screen diff of this file (d)">
             ⤢ Expand diff

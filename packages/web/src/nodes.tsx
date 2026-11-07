@@ -186,6 +186,15 @@ export function BundleCard({ data }: NodeProps<MapNode>) {
   const { item, selected } = data;
   const hidden = item.hidden ?? [];
   const names = hidden.map((h) => (h.fn ? displayName(h.fn) : (h.group?.label ?? ''))).filter(Boolean);
+  if (item.collapse) {
+    return (
+      <div className="card bundle-card collapse-card">
+        {handles}
+        <div className="card-title">− Show fewer</div>
+        <div className="bundle-hint">click to collapse this column</div>
+      </div>
+    );
+  }
   // Overview fold cards ("+N more files in src/lang") vs. capped impact-map columns.
   const fold = item.id.startsWith('rest|');
   const kinds = new Set(hidden.map((h) => (h.fn ? 'fn' : h.group!.kind)));
@@ -223,11 +232,12 @@ export function SinkCard({ data }: NodeProps<MapNode>) {
   );
 }
 
-export function ColumnHeader({ data }: NodeProps<Node<{ label: string; count: number; col: number }>>) {
+export function ColumnHeader({ data }: NodeProps<Node<{ label: string; count: number; col: number; expanded?: boolean }>>) {
   return (
     <div className={`col-header ${data.col === 0 ? 'col-header-focus' : ''}`}>
       <span>{data.label}</span>
       {data.col !== 0 && data.count > 0 && <span className="count">{data.count}</span>}
+      {data.expanded && <span className="col-collapse" title="Collapse this column">− Show fewer</span>}
     </div>
   );
 }

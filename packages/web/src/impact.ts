@@ -1,5 +1,5 @@
 import { MarkerType, type Edge, type Node } from '@xyflow/react';
-import { GROUP_KIND_FOR_LOD, isBreaking, isChanged, type FnNode, type Group, type Index, type Lod, type Selection, type Sink } from './data.ts';
+import { GROUP_KIND_FOR_LOD, isBreaking, isChanged, isTest, type FnNode, type Group, type Index, type Lod, type Selection, type Sink } from './data.ts';
 
 /**
  * The impact map: one focus function in the middle, upstream callers in columns to the left,
@@ -33,6 +33,10 @@ export interface MapItem {
   sink?: Sink;
   hidden?: MapItem[];
   score: number;
+  /** Shown only because its column was expanded: drawn below the column's original cards. */
+  extra?: boolean;
+  /** The "show fewer" card at the end of an expanded column. */
+  collapse?: boolean;
 }
 
 export interface MapView {
@@ -44,7 +48,7 @@ export interface MapView {
 }
 
 /** Signed hop distance from the focus: callers negative, callees positive. */
-export function hopsFrom(ix: Index, focus: string, maxHops = MAX_HOPS) {
+export function hopsFrom(ix: Index, focus: string, maxHops = MAX_HOPS, hidden?: (id: string) => boolean) {
   const hop = new Map<string, number>([[focus, 0]]);
   let deeper = false;
   const walk = (dir: -1 | 1) => {
@@ -55,7 +59,8 @@ export function hopsFrom(ix: Index, focus: string, maxHops = MAX_HOPS) {
         const edges = dir < 0 ? ix.callers.get(id) : ix.callees.get(id);
         for (const e of edges ?? []) {
           const other = dir < 0 ? e.source : e.target;
-          if (hop.has(other)) continue;
+          // Hidden code (tests, when hidden) is neither shown nor walked through.
+          if (hop.has(other) || hidden?.(other)) continue;
           if (d > maxHops) {
             deeper = true;
             continue;
@@ -81,8 +86,11 @@ export function buildMap(
   selection: Selection,
   /** Most cards to draw in total; 0 = no limit at all. */
   budget = 0,
+  /** Show test code around the focus (the focus itself always shows). */
+  showTests = true,
 ): MapView {
-  const { hop, deeper } = hopsFrom(ix, focus);
+  const hideTest = showTests ? undefined : (id: string) => id !== focus && !!ix.fns.get(id) && isTest(ix.fns.get(id)!);
+  const { hop, deeper } = hopsFrom(ix, focus, MAX_HOPS, hideTest);
 
   // ---- 1. Fold functions into items according to distance and level of detail ----
   const items = new Map<string, MapItem>();
@@ -117,8 +125,19 @@ export function buildMap(
   // Share the card budget between the columns around the focus.
   const sideCols = Math.max(1, columns.size - 1);
   const cap = budget > 0 ? Math.min(COLUMN_CAP, Math.max(2, Math.floor((budget - 1) / sideCols))) : Number.POSITIVE_INFINITY;
+  /** Expanded columns: how many cards they showed collapsed, so those keep their place. */
+  const collapsedCount = new Map<number, number>();
   for (const [col, list] of columns) {
     list.sort((a, b) => b.score - a.score || label(a).localeCompare(label(b)));
+    if (col !== 0 && list.length > cap && expandedCols.has(col)) {
+      // Opened in place: the cards already visible stay put; the rest appear below them,
+      // followed by a card to collapse the column again.
+      for (const it of list.slice(cap - 1)) it.extra = true;
+      collapsedCount.set(col, cap);
+      const collapse: MapItem = { id: `collapse|${col}`, kind: 'bundle', col, fnIds: [], hidden: [], score: -2, collapse: true };
+      list.push(collapse);
+      items.set(collapse.id, collapse);
+    }
     if (col !== 0 && list.length > cap && !expandedCols.has(col)) {
       const shown = list.slice(0, cap - 1);
       const hidden = list.slice(cap - 1);
@@ -187,12 +206,17 @@ export function buildMap(
   const place = (col: number, towards: number) => {
     const list = columns.get(col);
     if (!list) return;
+    // Revealed cards count where their "+N more" card stood, so opening one column never
+    // reorders its neighbors.
+    const slot = (n: string) => (items.get(n)?.extra ? (collapsedCount.get(items.get(n)!.col) ?? 1) - 1 : (order.get(n) ?? 0));
     const bary = (it: MapItem) => {
-      const ns = (neighbors.get(it.id) ?? []).filter((n) => items.get(n)?.col === towards).map((n) => order.get(n) ?? 0);
+      const ns = [...new Set((neighbors.get(it.id) ?? []).filter((n) => items.get(n)?.col === towards && !items.get(n)?.collapse).map(slot))];
       return ns.length ? ns.reduce((a, b) => a + b, 0) / ns.length : Number.POSITIVE_INFINITY;
     };
-    // Bundles stay last; everything else follows the column it connects to.
-    list.sort((a, b) => (a.kind === 'bundle' ? 1 : 0) - (b.kind === 'bundle' ? 1 : 0) || bary(a) - bary(b) || b.score - a.score);
+    // Bundles stay last, revealed cards come after the original ones, and within each part
+    // cards follow the column they connect to.
+    const rank = (it: MapItem) => (it.collapse ? 3 : it.kind === 'bundle' ? 2 : it.extra ? 1 : 0);
+    list.sort((a, b) => rank(a) - rank(b) || bary(a) - bary(b) || b.score - a.score);
     list.forEach((it, i) => order.set(it.id, i));
   };
   order.set(focus, 0);
@@ -216,7 +240,10 @@ export function buildMap(
   let top = 0;
   sortedCols.forEach((col, colIndex) => {
     const list = columns.get(col)!;
-    const total = list.reduce((sum, it) => sum + heightOf(it), 0) + SIZE.rowGap * (list.length - 1);
+    // An expanded column keeps the top it had collapsed (original cards plus the "+N more"
+    // card), so opening it only adds cards below and nothing already on screen moves.
+    const anchor = collapsedCount.has(col) ? list.filter((it) => !it.extra && !it.collapse).concat([{ kind: 'bundle' } as MapItem]) : list;
+    const total = anchor.reduce((sum, it) => sum + heightOf(it), 0) + SIZE.rowGap * (anchor.length - 1);
     let y = -total / 2;
     top = Math.min(top, y);
     const x = colIndex * (SIZE.colWidth + SIZE.colGap) + (col > 0 ? SIZE.focus.w - SIZE.colWidth : 0);
@@ -245,7 +272,7 @@ export function buildMap(
       height: 30,
       selectable: false,
       draggable: false,
-      data: { label: columnLabel(col, sinkCol), count: columns.get(col)!.reduce((n, it) => n + (it.kind === 'sink' ? 0 : it.fnIds.length), 0), col },
+      data: { label: columnLabel(col, sinkCol), count: columns.get(col)!.reduce((n, it) => n + (it.kind === 'sink' ? 0 : it.fnIds.length), 0), col, expanded: collapsedCount.has(col) },
     });
   });
 

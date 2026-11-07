@@ -132,6 +132,41 @@ The summary is Markdown written for a PR comment:
 
 `--json` or `--json-out` give the same facts as data for other tools.
 
+### Working through a review
+
+A review opens on the **brief**. **Start review →** opens the **review queue**: one change at a time, with nothing to arrange.
+
+- **Left:** the queue, in order:
+  1. the brief's suggested reading order, each with a reason;
+  2. the remaining changes by risk;
+  3. tests;
+  4. files that changed outside any function.
+
+  Each item shows ✓ done, ↻ changed since you accepted it, or ○ open, with progress and *hide done* on top.
+- **Center:** the current change:
+  - what changed and why it matters;
+  - breaking signature changes, invariants at risk, and any of the brief's risks that name this function;
+  - **just this function's diff** (unified or side by side), with review comments inline. Click a line number to comment.
+- **Right:** context:
+  - what the function does and why;
+  - who calls it, with callers outside the change marked and test callers collapsed;
+  - what it calls;
+  - which entry points reach it;
+  - external systems it touches.
+
+| Key | Does |
+|---|---|
+| `a` | accept the change and move to the next open one |
+| `n` / `p` | next / previous open change |
+| `c` | comment on this function (pull requests) |
+| `d` | the whole file's diff, full screen |
+| `z` | this function on the map (callers, callees, effects) |
+| `r` | back to the queue (from the map, at the selected change) |
+| `b` / `m` | the brief / the map |
+| Backspace | back |
+
+The map, Group by, and the invariant and diff tabs are still there for exploring, one key away. The queue is where the review itself happens.
+
 ### Open a pull request in CodeLens
 
 ```bash

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Background, Controls, getNodesBounds, MiniMap, ReactFlow, useReactFlow, useStore, type Edge, type Node, type NodeMouseHandler } from '@xyflow/react';
-import { buildIndex, defaultOverviewLod, displayName, isDone, LAYERS, LODS, OVERVIEW, riskLevel, type CodeGraph, type Index, type Layer, type Lod, type Selection } from './data.ts';
+import { buildIndex, defaultOverviewLod, displayName, isDone, isTest, LAYERS, LODS, OVERVIEW, riskLevel, type CodeGraph, type Index, type Layer, type Lod, type Selection } from './data.ts';
 import { buildMap, type MapItem } from './impact.ts';
 import { buildOverview } from './overview.ts';
 import { Search, type SearchHit } from './Search.tsx';
@@ -8,6 +8,7 @@ import { Guide } from './Guide.tsx';
 import { Brief } from './Brief.tsx';
 import { MarksProvider, ReviewProgress, useMarks } from './Marks.tsx';
 import { DiffViewer } from './DiffViewer.tsx';
+import { ReviewQueue } from './ReviewQueue.tsx';
 import { DiscussionProvider } from './Discussion.tsx';
 import type { PrDiscussion } from '../../cli/src/types.ts';
 import { invariantLayer } from './layers.ts';
@@ -147,7 +148,16 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
   // asks for a specific function or the map.
   const landing = ix.explore || !!graph.meta.pr || !!graph.enrichment;
   const landingName = ix.explore ? 'Guide' : 'Brief';
-  const [view, setView] = useState<'guide' | 'map'>(() => (landing && (params.get('view') === 'guide' || (!linked && params.get('view') !== 'map')) ? 'guide' : 'map'));
+  const [view, setView] = useState<View>(() =>
+    params.get('view') === 'queue' && !ix.explore ? 'queue' : landing && (params.get('view') === 'guide' || (!linked && params.get('view') !== 'map')) ? 'guide' : 'map',
+  );
+  // The review queue's current item: a changed function's id, or `file:<path>`.
+  const [queueAt, setQueueAt] = useState<string | null>(() => params.get('q'));
+  const review = !ix.explore && !!graph.review;
+  const openQueue = useCallback((key?: string) => {
+    if (key) setQueueAt(key);
+    setView('queue');
+  }, []);
 
   const [layer, setLayer] = useState<Layer>(() => (Number(params.get('layer')) || 1) as Layer);
   const [history, setHistory] = useState<string[]>([initialFocus]);
@@ -158,8 +168,23 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
   const lod = inOverview ? overviewLod : focusLod;
   const setLod = inOverview ? setOverviewLod : setFocusLod;
   const minLod: Lod = inOverview ? 1 : 0;
-  const hasTests = useMemo(() => graph.nodes.some((n) => n.entry?.kind === 'test'), [graph]);
-  const [showTests, setShowTests] = useState(() => !ix.explore);
+  const hasTests = useMemo(() => graph.nodes.some(isTest), [graph]);
+  // Tests calling the code are rarely what you came to see: hidden unless asked for (remembered).
+  const [showTests, setShowTestsState] = useState(() => {
+    try {
+      return localStorage.getItem('codelens.showTests') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const setShowTests = (v: boolean) => {
+    setShowTestsState(v);
+    try {
+      localStorage.setItem('codelens.showTests', v ? '1' : '0');
+    } catch {
+      // Not remembered: fine.
+    }
+  };
   const [budget, setBudget] = useBudget();
   const [opened, setOpened] = useState<Set<string>>(new Set());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
@@ -169,10 +194,10 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
   // ---- back / forward: every move is a browser history entry, and the URL says where you are ----
   const [nav, setNav] = useState({ depth: 0, max: 0 });
   useEffect(() => {
-    const place: Place = { view, layer, focus, sel: encodeSelection(selection) };
+    const place: Place = { view, layer, focus, sel: encodeSelection(selection), q: view === 'queue' ? queueAt : null };
     const current = window.history.state as (Place & { depth?: number }) | null;
     // Equal to the current entry: nothing moved, or this render is restoring it after back/forward.
-    if (current && current.view === place.view && current.layer === place.layer && current.focus === place.focus && current.sel === place.sel) return;
+    if (current && current.view === place.view && current.layer === place.layer && current.focus === place.focus && current.sel === place.sel && (current.q ?? null) === place.q) return;
     const url = placeUrl(place);
     if (current?.depth === undefined) {
       window.history.replaceState({ ...place, depth: 0 }, '', url);
@@ -181,12 +206,14 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
     const depth = current.depth + 1;
     window.history.pushState({ ...place, depth }, '', url);
     setNav({ depth, max: depth });
-  }, [view, layer, focus, selection]);
+  }, [view, layer, focus, selection, queueAt]);
   useEffect(() => {
     const onPop = (e: PopStateEvent) => {
       const p = e.state as (Place & { depth: number }) | null;
       if (!p) return;
       setView(p.view);
+      // A queue entry without an item means "the first open change".
+      if (p.view === 'queue') setQueueAt(p.q ?? null);
       setLayer(p.layer);
       setHistory((h) => {
         const at = h.lastIndexOf(p.focus);
@@ -274,8 +301,13 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
         searchRef.current?.focus();
       } else if (landing && (e.key === 'g' || e.key === 'b')) setView('guide');
       else if (landing && e.key === 'm') setView('map');
+      else if (review && e.key === 'r') {
+        // From a changed function on the map, straight to that change in the queue.
+        const fn = selection?.kind === 'fn' ? ix.fns.get(selection.id) : undefined;
+        openQueue(fn && fn.status !== 'unchanged' ? fn.id : undefined);
+      }
       else if (e.key === 'Backspace' && nav.depth > 0) back();
-      else if (view === 'guide') return;
+      else if (view === 'queue' || view === 'guide') return;
       else if (e.key === 'o' || e.key === 'Home') showOverview();
       else if (!ix.explore && ['1', '2', '3'].includes(e.key)) setLayer(Number(e.key) as Layer);
       else if (e.key === 'Escape') setSelection(null);
@@ -284,7 +316,6 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
       else if (layer === 1 && (e.key === '=' || e.key === '+')) changeLod(Math.max(minLod, lod - 1) as Lod);
       else if (e.key === 'ArrowRight' || e.key === 'j') stepChange(1);
       else if (e.key === 'ArrowLeft' || e.key === 'k') stepChange(-1);
-      else if (e.key === 'Backspace' && nav.depth > 0) back();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -330,6 +361,11 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
             <button role="tab" aria-selected={view === 'guide'} className={view === 'guide' ? 'active' : ''} onClick={() => setView('guide')} title={`${landingName} (${ix.explore ? 'g' : 'b'})`}>
               {landingName}
             </button>
+            {review && (
+              <button role="tab" aria-selected={view === 'queue'} className={view === 'queue' ? 'active' : ''} onClick={() => setView('queue')} title="Review one change at a time (r)">
+                Review
+              </button>
+            )}
             <button role="tab" aria-selected={view === 'map'} className={view === 'map' ? 'active' : ''} onClick={() => setView('map')} title="Map (m)">
               Map
             </button>
@@ -377,12 +413,30 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
       </nav>
       )}
 
-      {!ix.explore && view === 'guide' ? (
+      {review && view === 'queue' ? (
+        <ReviewQueue
+          ix={ix}
+          nav={navControls}
+          at={queueAt}
+          onAt={(key) => setQueueAt(key)}
+          onMap={(id) => {
+            setView('map');
+            centerOn(id);
+          }}
+          onDiff={openDiff}
+        />
+      ) : !ix.explore && view === 'guide' ? (
         <Brief
           ix={ix}
           nav={navControls}
           onOpenDiff={openDiff}
+          onStartReview={review}
           onStart={(id) => {
+            // With a review to work through, starting means the queue (empty id: first open change).
+            if (review) {
+              if (!id) setQueueAt(null);
+              return openQueue(id || undefined);
+            }
             setView('map');
             centerOn(id);
           }}
@@ -447,8 +501,8 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
               </div>
               {!ix.explore && <ReviewProgress compact />}
               <div className="lod" role="radiogroup" aria-label="Level of detail">
-                {inOverview && hasTests && (
-                  <button className={`lod-btn tests-btn ${showTests ? 'active' : ''}`} onClick={() => setShowTests(!showTests)} aria-pressed={showTests} title="Show test code in the overview">
+                {hasTests && (
+                  <button className={`lod-btn tests-btn ${showTests ? 'active' : ''}`} onClick={() => setShowTests(!showTests)} aria-pressed={showTests} title={showTests ? 'Hide test code on the map' : 'Show test code on the map'}>
                     Tests
                   </button>
                 )}
@@ -498,10 +552,18 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
               expandedCols={expandedCols}
               selection={selection}
               budget={budget}
+              showTests={showTests}
               onSelect={setSelection}
               onFocus={centerOn}
               onToggleGroup={toggleGroup}
               onExpandCol={(c) => setExpandedCols((s) => new Set(s).add(c))}
+              onCollapseCol={(c) =>
+                setExpandedCols((s) => {
+                  const n = new Set(s);
+                  n.delete(c);
+                  return n;
+                })
+              }
             />
           )}
           {layer === 2 && <InvariantCanvas ix={ix} selection={selection} onSelect={setSelection} />}
@@ -522,6 +584,7 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
             }}
             onLayer={openLayer}
             onOpenDiff={openDiff}
+            onReview={review ? (id) => openQueue(id) : undefined}
             nav={navControls}
           />
         </aside>
@@ -535,11 +598,15 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
 // ---- where you are, as a history entry and a URL ----
 
 interface Place {
-  view: 'guide' | 'map';
+  view: View;
+  /** Review queue item, when in the queue. */
+  q: string | null;
   layer: Layer;
   focus: string;
   sel: string | null;
 }
+
+type View = 'guide' | 'queue' | 'map';
 
 function encodeSelection(s: Selection): string | null {
   if (!s) return null;
@@ -564,6 +631,8 @@ function decodeSelection(raw: string | null): Selection {
 function placeUrl(p: Place): string {
   const q = new URLSearchParams(location.search);
   q.set('view', p.view);
+  if (p.q) q.set('q', p.q);
+  else q.delete('q');
   q.set('layer', String(p.layer));
   if (p.focus === OVERVIEW) {
     q.delete('fn');
@@ -594,27 +663,31 @@ function ImpactCanvas(props: {
   expandedCols: Set<number>;
   selection: Selection;
   budget: number;
+  showTests: boolean;
   onSelect: (s: Selection) => void;
   onFocus: (id: string) => void;
   onToggleGroup: (id: string) => void;
   onExpandCol: (col: number) => void;
+  onCollapseCol: (col: number) => void;
 }) {
-  const { ix, focus, lod, expandedGroups, expandedCols, selection, budget, onSelect, onFocus, onToggleGroup, onExpandCol } = props;
+  const { ix, focus, lod, expandedGroups, expandedCols, selection, budget, showTests, onSelect, onFocus, onToggleGroup, onExpandCol, onCollapseCol } = props;
   const view = useMemo(
-    () => buildMap(ix, focus, lod, expandedGroups, expandedCols, selection, budget),
-    [ix, focus, lod, expandedGroups, expandedCols, selection, budget],
+    () => buildMap(ix, focus, lod, expandedGroups, expandedCols, selection, budget, showTests),
+    [ix, focus, lod, expandedGroups, expandedCols, selection, budget, showTests],
   );
 
   const itemOf = (node: Node) => (node.data as { item?: MapItem }).item;
   const clicked = useRef<string | null>(null);
   const onNodeClick: NodeMouseHandler<Node> = (_, node) => {
+    const header = node.data as { expanded?: boolean; col?: number };
+    if (node.type === 'header' && header.expanded) return onCollapseCol(header.col!);
     const item = itemOf(node);
     if (!item) return;
     clicked.current = node.id;
     if (item.kind === 'fn') onSelect({ kind: 'fn', id: item.fn!.id });
     else if (item.kind === 'group') onSelect({ kind: 'group', id: item.group!.id });
     else if (item.kind === 'sink') onSelect({ kind: 'sink', id: item.sink!.id });
-    else if (item.kind === 'bundle') onExpandCol(item.col);
+    else if (item.kind === 'bundle') (item.collapse ? onCollapseCol : onExpandCol)(item.col);
   };
   // Double-click is the progressive-disclosure gesture: center on a function, open a group.
   const onNodeDoubleClick: NodeMouseHandler<Node> = (_, node) => {
@@ -626,7 +699,8 @@ function ImpactCanvas(props: {
   return (
     <>
       <ReactFlow
-        key={`${focus}|${lod}|${budget}|${[...expandedGroups].join(',')}|${[...expandedCols].join(',')}`}
+        // Remount (and re-fit) for a new focus or grouping; opening a column or group keeps the view.
+        key={`${focus}|${lod}|${budget}|${showTests}`}
         nodes={view.nodes}
         edges={view.edges}
         nodeTypes={nodeTypes}

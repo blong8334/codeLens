@@ -8,6 +8,8 @@ import type { ReviewBrief } from '../../cli/src/types.ts';
 interface Props {
   nav?: NavControls;
   onOpenDiff?: (path: string) => void;
+  /** There is a review queue: "Start review" opens it at the first open change. */
+  onStartReview?: boolean;
   ix: Index;
   /** Open the map centered on a function. */
   onStart: (fnId: string) => void;
@@ -15,7 +17,7 @@ interface Props {
 }
 
 /** A code review's landing page: what the change is, what could go wrong, where to start. */
-export function Brief({ ix, onStart, onMap, nav, onOpenDiff }: Props) {
+export function Brief({ ix, onStart, onMap, nav, onOpenDiff, onStartReview }: Props) {
   const { graph } = ix;
   const pr = graph.meta.pr;
   const brief = graph.enrichment?.brief ?? fallbackBrief(ix);
@@ -92,8 +94,8 @@ export function Brief({ ix, onStart, onMap, nav, onOpenDiff }: Props) {
           </div>
           <div className="guide-actions">
             {order[0] && (
-              <button className="btn btn-primary" onClick={() => onStart(order[0].fn.id)}>
-                Start review with {displayName(order[0].fn)} →
+              <button className="btn btn-primary" onClick={() => onStart(onStartReview ? '' : order[0].fn.id)}>
+                {onStartReview ? 'Start review →' : `Start review with ${displayName(order[0].fn)} →`}
               </button>
             )}
             <button className="btn" onClick={onMap}>
