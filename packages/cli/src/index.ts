@@ -12,6 +12,7 @@ import { explore } from './explore.ts';
 import { WORKING_TREE } from './git.ts';
 import { buildBrief } from './brief.ts';
 import { commitPatch, patchInfo } from './patch.ts';
+import { combineWorkspace } from './workspace.ts';
 import { applyPreferences, defaultPreferencesPath, loadPreferences } from './preferences.ts';
 import { buildGuide } from './guide.ts';
 import { describeGraph } from './purpose.ts';
@@ -256,9 +257,8 @@ program
 
 program
   .command('diff')
-  .description('Review a patch from any code review tool (a downloaded .diff or .patch) against a local clone')
-  .argument('<patch>', 'unified diff or `git format-patch` file; - reads stdin')
-  .argument('[repo]', 'local clone the patch applies to', '.')
+  .description('Review patches from any code review tool (downloaded .diff / .patch files) against local clones; several packages at once from a workspace folder')
+  .argument('<patches...>', 'unified diff or `git format-patch` files (- reads stdin); Package=file to say which package a diff is for; a trailing folder is the clone or workspace (default: .)')
   .option('-b, --base <ref>', 'revision the patch was written against', 'HEAD')
   .option('--strip <n>', 'leading path components to drop from patch paths, as `git apply -p` (default 1: a/ b/)')
   .option('--directory <dir>', 'prepend this directory to patch paths (patch made inside a subfolder)')
@@ -280,26 +280,48 @@ program
   .option('--prefs <file>', `your review preferences: what you care about and skip (default: ${defaultPreferencesPath()}, if it exists)`)
   .option('--no-prefs', 'ignore your review preferences')
   .option('--no-types', 'skip the TypeScript checker (name matching only)')
-  .action(async (patchArg: string, repo: string, o) => {
+  .action(async (args: string[], o) => {
     const { Repo } = await import('./git.ts');
     const { reviewMarkdown, reviewReport } = await import('./review.ts');
-    const fromStdin = patchArg === '-';
-    const text = fromStdin ? await readStdin() : await readFile(here(patchArg), 'utf8');
-    if (!/^(@@ |diff --git |--- )/m.test(text)) throw new Error(`${fromStdin ? 'stdin' : patchArg} does not look like a unified diff`);
-    const root = (await Repo.open(here(repo))).root;
-    const head = await commitPatch(root, o.base, text, { strip: o.strip === undefined ? undefined : Number(o.strip), directory: o.directory });
-    const info = patchInfo(text);
-    const source = fromStdin ? 'patch from stdin' : basename(patchArg);
-    const title = o.title ?? info.title;
-    const description = o.description?.startsWith('@') ? await readFile(here(o.description.slice(1)), 'utf8') : (o.description ?? info.description);
+    const { statSync } = await import('node:fs');
+    // A trailing folder (not a patch file) is the clone or workspace.
+    const last = args[args.length - 1];
+    const repo = args.length > 1 && !last.includes('=') && statSync(here(last), { throwIfNoEntry: false })?.isDirectory() ? args.pop()! : '.';
+    const patches = await Promise.all(
+      args.map(async (arg) => {
+        const [dir, file] = /^[^=/\\]+=/.test(arg) ? [arg.slice(0, arg.indexOf('=')), arg.slice(arg.indexOf('=') + 1)] : [undefined, arg];
+        if (file === '-' && args.length > 1) throw new Error('stdin (-) works for a single patch only');
+        const text = file === '-' ? await readStdin() : await readFile(here(file), 'utf8');
+        if (!/^(@@ |diff --git |--- )/m.test(text)) throw new Error(`${file === '-' ? 'stdin' : file} does not look like a unified diff`);
+        return { label: file === '-' ? 'patch from stdin' : basename(file), text, dir };
+      }),
+    );
+    const strip = o.strip === undefined ? undefined : Number(o.strip);
+    let root: string;
+    let base: string;
+    let head: string;
+    if (patches.length === 1 && !patches[0].dir) {
+      root = (await Repo.open(here(repo))).root;
+      base = o.base;
+      head = await commitPatch(root, o.base, patches[0].text, { strip, directory: o.directory });
+    } else {
+      log(`Matching ${patches.length} patch${patches.length === 1 ? '' : 'es'} to packages in ${here(repo)}…`);
+      const ws = await combineWorkspace(here(repo), patches, { base: o.base, strip, log });
+      ({ root, base, head } = ws);
+    }
+    const infos = patches.map((p) => patchInfo(p.text));
+    const source = patches.map((p) => p.label).join(', ');
+    const title = o.title ?? infos.find((i) => i.title)?.title;
+    const description = o.description?.startsWith('@') ? await readFile(here(o.description.slice(1)), 'utf8') : (o.description ?? ([...new Set(infos.map((i) => i.description).filter(Boolean))].join('\n\n') || undefined));
     log(`Applied ${source} on ${o.base}${title ? ` — ${title}` : ''}`);
     const store = await openStore(o);
-    let graph = await inspect(root, { base: o.base, head, maxDepth: Number(o.depth), full: false, store, types: o.types, log });
+    let graph = await inspect(root, { base, head, maxDepth: Number(o.depth), full: false, store, types: o.types, log });
     graph.meta.change = { title, description, source };
     // One set of marks per repository by default: a mark is tied to a change's exact lines, so a new
     // revision of the same change keeps it and a different change touching the same code does not.
     const key: string | undefined = o.key;
-    if (graph.review) graph.review.key = key ? `patch:${root}:${key}` : `patch:${root}`;
+    const scope = patches.length === 1 && !patches[0].dir ? root : `workspace:${here(repo)}`;
+    if (graph.review) graph.review.key = key ? `patch:${scope}:${key}` : `patch:${scope}`;
     applyPreferences(graph, await usePreferences(o.prefs));
     const provider = await providerFor(o.provider, o.model, o.baseUrl);
     log(`Enriching with ${provider.name}…`);
@@ -308,7 +330,7 @@ program
     await store?.close();
     const report = reviewReport(graph);
     if (o.source === false) stripSource(graph);
-    const name = `${basename(root)}-${(key ?? head.slice(0, 7)).replace(/[^\w.-]+/g, '_')}`;
+    const name = `${basename(scope === root ? root : here(repo))}-${(key ?? head.slice(0, 7)).replace(/[^\w.-]+/g, '_')}`;
     const out = o.out ? here(o.out) : join(cacheDir(), 'graphs', `${name}.graph.json`);
     await writeJson(out, graph);
     const md = out.replace(/\.graph\.json$|\.json$/, '') + '.review.md';

@@ -277,6 +277,15 @@ pbpaste | npx @blong8334/codelens diff - --base origin/main --title "Retry faile
 
 The patch is applied as a commit object only. Your working tree, index and branches are not touched. `git format-patch` files supply the title and description; otherwise, pass `--title` and `--description` (`@file` reads it from a file). Accepted changes are kept per repository and tied to each change's exact lines: download the next revision and only what the author changed reopens. (`--key <id>` keeps a review's marks separate.) Use `--strip 0` when the patch's paths have no `a/` and `b/` prefixes, and `--directory <dir>` when it was made inside a subfolder.
 
+**Changes that span several packages** (one diff per package, as code.amazon and similar tools export them): run from the folder that holds the packages, such as a workspace's `src/`, and pass every diff.
+
+```bash
+cd ~/workspace/MyWorkspace/src
+npx @blong8334/codelens diff ~/Downloads/*.diff -p claude-code
+```
+
+Each diff is matched to the package whose files it changes, and the packages are combined into one review: one brief, one queue, one map, with calls between packages linked. When a diff could fit more than one package (for example, one that only adds new files), name it: `PackageName=~/Downloads/x.diff`. The packages are only read; the combined snapshot lives in the CodeLens cache.
+
 ### Your review preferences (optional)
 
 Every reviewer cares about different things. Write yours in your own words in `~/.config/codelens/preferences.md`. CodeLens uses them for the brief and for the notes on each change. Without the file, nothing changes.
