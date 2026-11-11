@@ -73,8 +73,14 @@ export function ChatPanel({ chat, focus, onClose }: { chat: ChatInfo; focus?: Fn
   const [draft, setDraft] = useState('');
   const box = useRef<HTMLTextAreaElement>(null);
   const end = useRef<HTMLDivElement>(null);
-  useEffect(() => box.current?.focus(), []);
-  useEffect(() => end.current?.scrollIntoView({ block: 'end' }), [turns.length, pending]);
+  useEffect(() => {
+    box.current?.focus();
+  }, []);
+  // Braces, not an expression body: scrollIntoView returns a Promise in newer browsers, and an effect
+  // that returns anything but a function crashes React when the panel closes.
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: 'end' });
+  }, [turns.length, pending]);
   const send = (text = draft) => {
     const q = text.trim();
     if (!q || pending) return;
