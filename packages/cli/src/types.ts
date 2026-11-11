@@ -36,6 +36,8 @@ export interface FnNode {
   /** Shortest callee-distance from a changed function (0 = changed itself). */
   downDepth: number | null;
   before?: { signature: Signature; source: string; throws: string[] };
+  /** Set when this function was moved or renamed: its id in the base revision, and whether the body is otherwise unchanged. */
+  moved?: { from: string; renamed: boolean; exact: boolean };
   after?: { source: string };
   /** Current source (base source for deleted functions), truncated for very long bodies. */
   source: string;
@@ -148,6 +150,19 @@ export interface ReviewData {
   files: ReviewFile[];
   /** Changed function id → fingerprint of its own changes: an "accept change" mark holds while it matches. */
   functions: Record<string, string>;
+  /** The reviewer's preferences, when they have any (`~/.config/codelens/preferences.md`). */
+  preferences?: ReviewPreferences;
+  /** Functions (ids) and files (paths) the preferences skip: shown apart, not counted as left to review. */
+  skipped?: string[];
+}
+
+export interface ReviewPreferences {
+  /** Where they were read from. */
+  source: string;
+  /** The reviewer's own words: what they care about and what they skip. */
+  text: string;
+  skipTests: boolean;
+  skipMoves: boolean;
 }
 
 export interface ReviewFile {
@@ -290,6 +305,11 @@ export type ContractChangeKind =
 
 export interface ContractChange {
   breaking: boolean;
+  /**
+   * A signature change the compiler enforces: a statically typed language, and every direct caller
+   * is updated in the same change. If it builds, the callers match, so `breaking` is false.
+   */
+  compilerChecked?: boolean;
   kinds: ContractChangeKind[];
   before?: string;
   after?: string;
@@ -309,6 +329,8 @@ export interface NodeEnrichment {
   invariants: Invariant[];
   blastRadius: number; // 0.0 – 1.0
   reasons: string[];
+  /** Notes on what the reviewer cares about (performance, duplication, structure…), from the model. */
+  concerns?: { topic: string; note: string }[];
   source: 'heuristic' | 'llm';
 }
 

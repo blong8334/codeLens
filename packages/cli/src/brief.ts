@@ -17,6 +17,8 @@ export interface BriefInput {
   entryPoints: { name: string; kind: string; reaches: string[] }[];
   effects: { label: string; changes: string[] }[];
   testsChanged: string[];
+  /** The reviewer's preferences, in their words. */
+  preferences?: string;
 }
 
 export interface BriefOutput {
@@ -37,7 +39,7 @@ export async function buildBrief(graph: CodeGraph, describer: Describer, opts: {
   if (!describer.describeBrief || describer.name === 'heuristic' || !input.changes.length) return finish(offline, byKey, 'heuristic');
 
   const key = createHash('sha1')
-    .update(JSON.stringify([describer.name, 'brief', input.title, input.description, input.changes.map((c) => [c.key, c.node.id, c.node.diff ?? c.node.source])]))
+    .update(JSON.stringify([describer.name, 'brief', input.title, input.description, input.preferences ?? '', input.changes.map((c) => [c.key, c.node.id, c.node.diff ?? c.node.source])]))
     .digest('hex');
   const stored = (await opts.store?.getDescriptions([key]))?.get(key) as BriefOutput | undefined;
   if (stored) return finish(stored, byKey, 'llm');
@@ -70,9 +72,10 @@ export function briefInput(graph: CodeGraph): BriefInput {
   const report = reviewReport(graph);
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   const order = graph.enrichment?.reviewOrder ?? graph.nodes.filter((n) => n.status !== 'unchanged').map((n) => n.id);
+  const skipped = new Set(graph.review?.skipped ?? []);
   const changes = order
     .map((id) => byId.get(id)!)
-    .filter(Boolean)
+    .filter((n) => n && !skipped.has(n.id))
     .slice(0, MAX_CHANGES)
     .map((node, i) => ({ key: `c${i + 1}`, node, untouchedCallers: report.changes.find((c) => c.id === node.id)?.callers ?? 0 }));
   return {
@@ -81,7 +84,8 @@ export function briefInput(graph: CodeGraph): BriefInput {
     changes,
     entryPoints: report.entryPoints.map(({ name, kind, reaches }) => ({ name, kind, reaches })),
     effects: report.effects,
-    testsChanged: [...new Set(changes.filter((c) => isTestFile(c.node.file)).map((c) => c.node.file))],
+    testsChanged: [...new Set((graph.review?.files.map((f) => f.path) ?? changes.map((c) => c.node.file)).filter(isTestFile))],
+    preferences: graph.review?.preferences?.text,
   };
 }
 
@@ -117,7 +121,9 @@ export function heuristicBrief(graph: CodeGraph, input: BriefInput): BriefOutput
   for (const e of input.effects.slice(0, 3)) watch.push(`Changes reach ${e.label.toLowerCase()} through ${e.changes.slice(0, 3).map((x) => `\`${x}\``).join(', ')}.`);
   if (input.entryPoints.length) watch.push(`${input.entryPoints.length} entry point${input.entryPoints.length === 1 ? '' : 's'} reach the change, starting with \`${input.entryPoints[0].name}\`.`);
   const readingOrder = code.slice(0, 5).map((c) => ({ id: c.key, reason: c.node.enrichment?.reasons[0] ? `${capitalize(c.node.enrichment.reasons[0])}.` : `${capitalize(c.node.status)} function.` }));
-  const testing = input.testsChanged.length
+  const testing = graph.review?.preferences?.skipTests
+    ? 'Tests are skipped by your preferences.'
+    : input.testsChanged.length
     ? `Tests changed in ${input.testsChanged.join(', ')}.`
     : code.length
       ? 'No test files changed: check that the new behavior is covered.'

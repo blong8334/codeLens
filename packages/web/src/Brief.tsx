@@ -77,6 +77,14 @@ export function Brief({ ix, onStart, onMap, nav, onOpenDiff, onStartReview }: Pr
               {change ? change.source : `${graph.meta.base} → ${graph.meta.head === 'WORKING' ? 'working tree' : graph.meta.head}`}
             </h1>
           )}
+          {graph.review?.preferences && (
+            <div className="guide-meta" title={graph.review.preferences.source}>
+              <span>
+                Shaped by your review preferences
+                {graph.review.skipped?.length ? ` · ${graph.review.skipped.length} item${graph.review.skipped.length === 1 ? '' : 's'} skipped (${[graph.review.preferences.skipTests && 'tests', graph.review.preferences.skipMoves && 'moves and renames'].filter(Boolean).join(', ')})` : ''}
+              </span>
+            </div>
+          )}
           <div className="brief-facts">
             {risk !== undefined && (
               <span className={`brief-risk risk-${riskLevel(risk)}`}>

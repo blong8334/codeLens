@@ -25,8 +25,15 @@ export interface NodeContext {
   /** Lines added plus removed in this function. */
   linesChanged: number;
   danglingCallers: number;
+  /** Direct callers the change does not touch (a signature change must not have any to be compiler-checked). */
+  untouchedDirectCallers: number;
+  /** The reviewer's preferences, in their words, when they have any. */
+  preferences?: string;
   heuristic: NodeEnrichment;
 }
+
+/** Statically typed languages: a call that no longer matches a changed signature fails the build. */
+const COMPILED = new Set(['typescript', 'tsx', 'java', 'kotlin', 'scala', 'csharp', 'go', 'rust', 'c', 'cpp', 'swift']);
 
 export interface EnrichmentProvider extends Describer {
   name: string;
@@ -60,6 +67,8 @@ export async function enrich(
       untouchedCallers: [...ancestors].filter((id) => byId.get(id)!.status === 'unchanged').length,
       linesChanged: (node.diff ?? '').split('\n').filter((l) => /^[+-]/.test(l)).length,
       danglingCallers: graph.edges.filter((e) => e.target === node.id && e.dangling).length,
+      untouchedDirectCallers: (callersOf.get(node.id) ?? []).filter((id) => byId.get(id)!.status === 'unchanged').length,
+      preferences: graph.review?.preferences?.text,
       heuristic: undefined!,
     };
     ctx.heuristic = heuristicEnrichment(ctx);
@@ -81,6 +90,7 @@ export async function enrich(
       ctx.callees.map((n) => n.id).sort().join(','),
       String(ctx.untouchedCallers),
       String(ctx.danglingCallers),
+      ctx.preferences ?? '',
     );
   const cached = cacheable ? await opts.store!.getDescriptions(contexts.map(keyOf)) : new Map<string, unknown>();
   const fresh: { key: string; kind: 'change'; value: unknown }[] = [];
@@ -91,6 +101,11 @@ export async function enrich(
     if (hit) {
       ctx.node.enrichment = hit;
       reused++;
+      return;
+    }
+    // A move or rename with the body otherwise unchanged needs no model to explain it.
+    if (ctx.node.moved?.exact) {
+      ctx.node.enrichment = ctx.heuristic;
       return;
     }
     try {
@@ -160,6 +175,28 @@ export function heuristicEnrichment(ctx: NodeContext): NodeEnrichment {
   const invariants = detectInvariants(node);
   const reasons: string[] = [];
 
+  if (node.moved?.exact) {
+    const from = node.moved.from;
+    const fromFile = from.slice(0, from.indexOf('#'));
+    const what = node.moved.renamed ? `Renames \`${from.slice(from.indexOf('#') + 1)}\` to \`${node.qualifiedName}\`` : `Moves \`${node.qualifiedName}\``;
+    return {
+      summary: `${what}${fromFile !== node.file ? ` from ${fromFile} to ${node.file}` : ''}; the body is otherwise unchanged.`,
+      contract: { breaking: false, kinds: ['none'], description: node.moved.renamed ? 'Renamed; callers in this change use the new name.' : 'Moved; no contract change.' },
+      invariants: [],
+      blastRadius: ctx.danglingCallers ? 0.3 : 0.03,
+      reasons: [node.moved.renamed ? 'rename with no logic change' : 'move with no logic change', ...(ctx.danglingCallers ? [`${ctx.danglingCallers} call site${ctx.danglingCallers > 1 ? 's' : ''} still use the old name`] : [])],
+      source: 'heuristic',
+    };
+  }
+  // A signature change in a typed language with every direct caller updated in the same change: the
+  // compiler checks that they match, so it is not a risk by itself. (Sync/async is excluded: an
+  // un-awaited promise still compiles.)
+  if (contract.breaking && COMPILED.has(node.language) && !ctx.untouchedDirectCallers && !ctx.danglingCallers && !contract.kinds.includes('async-changed')) {
+    contract.compilerChecked = true;
+    contract.breaking = false;
+  }
+  if (node.moved) reasons.push(`moved from ${node.moved.from.slice(0, node.moved.from.indexOf('#'))}`);
+
   // Blast radius is about code the change does NOT touch: callers that are themselves part of the
   // change get reviewed anyway, and nothing outside a change can call a function it just added.
   let score = 0.08;
@@ -174,7 +211,10 @@ export function heuristicEnrichment(ctx: NodeContext): NodeEnrichment {
     score += 0.1;
     reasons.push('part of the exported/public surface');
   }
-  if (contract.breaking) {
+  if (contract.compilerChecked) {
+    score += 0.03;
+    reasons.push(`signature change (${contract.kinds.join(', ')}), compiler-checked: every caller is updated in this change`);
+  } else if (contract.breaking) {
     score += 0.3;
     reasons.push(`breaking contract change (${contract.kinds.join(', ')})`);
   }

@@ -12,8 +12,10 @@ import type { ReviewFile } from '../../cli/src/types.ts';
 export type QueueItem =
   | { key: string; kind: 'fn'; fn: FnNode; section: Section; reason?: string }
   | { key: string; kind: 'file'; file: ReviewFile; section: Section };
-type Section = 'Start here' | 'Changes' | 'Tests' | 'Other files';
-const SECTIONS: Section[] = ['Start here', 'Changes', 'Tests', 'Other files'];
+type Section = 'Start here' | 'Changes' | 'Moved and renamed' | 'Tests' | 'Other files' | 'Skipped';
+const SECTIONS: Section[] = ['Start here', 'Changes', 'Moved and renamed', 'Tests', 'Other files', 'Skipped'];
+/** Items the reviewer's preferences skip: listed apart, not counted as left to review. */
+const counts = (q: QueueItem) => q.section !== 'Skipped';
 
 /**
  * The order to review in: the brief's suggested reading order first (with its reasons), then the
@@ -22,15 +24,17 @@ const SECTIONS: Section[] = ['Start here', 'Changes', 'Tests', 'Other files'];
 export function buildQueue(ix: Index): QueueItem[] {
   const out: QueueItem[] = [];
   const seen = new Set<string>();
+  const skipped = new Set(ix.graph.review?.skipped ?? []);
   const add = (fn: FnNode | undefined, section: Section, reason?: string) => {
     if (!fn || seen.has(fn.id) || fn.status === 'unchanged') return;
     seen.add(fn.id);
-    out.push({ key: fn.id, kind: 'fn', fn, section: isTest(fn) && section !== 'Start here' ? 'Tests' : section, reason });
+    const where: Section = skipped.has(fn.id) ? 'Skipped' : section === 'Start here' ? section : fn.moved?.exact ? 'Moved and renamed' : isTest(fn) ? 'Tests' : section;
+    out.push({ key: fn.id, kind: 'fn', fn, section: where, reason });
   };
   for (const r of ix.graph.enrichment?.brief?.readingOrder ?? []) add(ix.fns.get(r.id), 'Start here', r.reason);
   for (const id of ix.reviewOrder) if (!isTest(ix.fns.get(id)!)) add(ix.fns.get(id), 'Changes');
   for (const id of ix.reviewOrder) add(ix.fns.get(id), 'Tests');
-  for (const f of ix.graph.review?.files ?? []) if (f.functions === 0) out.push({ key: `file:${f.path}`, kind: 'file', file: f, section: 'Other files' });
+  for (const f of ix.graph.review?.files ?? []) if (f.functions === 0) out.push({ key: `file:${f.path}`, kind: 'file', file: f, section: skipped.has(f.path) ? 'Skipped' : 'Other files' });
   return out;
 }
 
@@ -50,6 +54,7 @@ export function ReviewQueue({ ix, nav, at, onAt, onMap, onDiff }: Props) {
   const queue = useMemo(() => buildQueue(ix), [ix]);
   const marks = useMarks();
   const [hideDone, setHideDone] = useState(false);
+  const [showSkipped, setShowSkipped] = useState(false);
   const commentBox = useRef<HTMLDivElement>(null);
   // The pending "move to the next change" after an accept: cancelled by anything else you do.
   const advance = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -66,7 +71,7 @@ export function ReviewQueue({ ix, nav, at, onAt, onMap, onDiff }: Props) {
   useEffect(() => cancelAdvance, []);
   const done = (it: QueueItem) => (it.kind === 'fn' ? isDone(ix, it.fn) : marks.reviewed.has(it.file.path));
   const markOf = (it: QueueItem): MarkState => (done(it) ? 'reviewed' : it.kind === 'fn' ? marks.fnState(it.fn.id) : marks.state(it.file.path));
-  const current = queue.find((q) => q.key === at) ?? queue.find((q) => !done(q)) ?? queue[0];
+  const current = queue.find((q) => q.key === at) ?? queue.find((q) => counts(q) && !done(q)) ?? queue.find(counts) ?? queue[0];
 
   // Next / previous open item from here (wrapping); stays put when everything is done.
   const step = (dir: 1 | -1, fromKey = current?.key) => {
@@ -74,7 +79,7 @@ export function ReviewQueue({ ix, nav, at, onAt, onMap, onDiff }: Props) {
     const i = queue.findIndex((q) => q.key === fromKey);
     for (let k = 1; k <= queue.length; k++) {
       const q = queue[(i + dir * k + queue.length * k) % queue.length];
-      if (!done(q)) return onAt(q.key);
+      if (counts(q) && !done(q)) return onAt(q.key);
     }
   };
   const setDone = (it: QueueItem, on: boolean) => (it.kind === 'fn' ? marks.toggleFn(it.fn.id, on) : marks.toggle(it.file.path, on));
@@ -126,7 +131,7 @@ export function ReviewQueue({ ix, nav, at, onAt, onMap, onDiff }: Props) {
   });
 
   if (!current) return <div className="empty">Nothing to review in this change.</div>;
-  const open = queue.filter((q) => !done(q)).length;
+  const open = queue.filter((q) => counts(q) && !done(q)).length;
 
   return (
     <div className="queue">
@@ -134,7 +139,7 @@ export function ReviewQueue({ ix, nav, at, onAt, onMap, onDiff }: Props) {
         <div className="queue-list-head">
           <NavButtons nav={nav} />
           <ReviewProgress />
-          {ix.graph.meta.pr && <ApproveReview author={ix.graph.meta.pr.author} complete={queue.every(done)} remaining={queue.filter((q) => !done(q)).length} />}
+          {ix.graph.meta.pr && <ApproveReview author={ix.graph.meta.pr.author} complete={queue.filter(counts).every(done)} remaining={open} />}
           <div className="queue-list-tools">
             <label className="hide-done">
               <input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} /> hide done
@@ -143,12 +148,20 @@ export function ReviewQueue({ ix, nav, at, onAt, onMap, onDiff }: Props) {
           </div>
         </div>
         {SECTIONS.map((section) => {
-          const items = queue.filter((q) => q.section === section && (!hideDone || !done(q) || q.key === current.key));
+          const all = queue.filter((q) => q.section === section);
+          const items = all.filter((q) => !hideDone || !done(q) || q.key === current.key);
           if (!items.length) return null;
+          const folded = section === 'Skipped' && !showSkipped && current.section !== 'Skipped';
           return (
             <div key={section} className="queue-section">
-              <div className="queue-section-label">{section}</div>
-              {items.map((q) => (
+              {section === 'Skipped' ? (
+                <button className="queue-section-label link" onClick={() => setShowSkipped(folded)} title={ix.graph.review?.preferences?.source}>
+                  {folded ? '▸' : '▾'} Skipped by your preferences ({all.length})
+                </button>
+              ) : (
+                <div className="queue-section-label">{section}</div>
+              )}
+              {!folded && items.map((q) => (
                 <button key={q.key} className={`queue-item mark-${markOf(q)} ${q.key === current.key ? 'is-current' : ''}`} onClick={() => goTo(q.key)}>
                   <span className="queue-check">{markOf(q) === 'reviewed' ? '✓' : markOf(q) === 'stale' ? '↻' : '○'}</span>
                   <span className="queue-item-text">
@@ -315,12 +328,21 @@ function FunctionReview({
               ))}
             </ul>
           )}
+          {e?.concerns && e.concerns.length > 0 && (
+            <ul className="queue-concerns">
+              {e.concerns.map((c, i) => (
+                <li key={i}>
+                  <span className="concern-topic">{c.topic}</span> <Prose text={c.note} />
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       )}
 
       {(showSig || e?.contract.breaking) && (
         <section className={`queue-callout ${e?.contract.breaking ? 'bad' : ''}`}>
-          <div className="queue-callout-title">{e?.contract.breaking ? '⚠ Breaking contract change' : 'Signature changed'}</div>
+          <div className="queue-callout-title">{e?.contract.breaking ? '⚠ Breaking contract change' : e?.contract.compilerChecked ? 'Signature changed · compiler-checked: every caller is updated in this change' : 'Signature changed'}</div>
           <p>
             <Prose text={e!.contract.description} />
           </p>

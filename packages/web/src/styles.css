@@ -652,6 +652,9 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 0 5px; border: 1px sol
 .queue-note p { margin: 0; }
 .queue-reason { color: var(--muted); }
 .queue-reasons { margin: 0; padding-left: 18px; font-size: 13px; color: var(--muted); }
+.queue-concerns { margin: 8px 0 0; padding-left: 0; list-style: none; font-size: 13px; display: grid; gap: 4px; }
+.concern-topic { display: inline-block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent, #6b8afd); margin-right: 4px; }
+button.queue-section-label { background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
 .queue-callout { border: 1px solid var(--border); border-left: 3px solid var(--border-strong); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; background: var(--surface); }
 .queue-callout p, .queue-callout ul { margin: 0; }
 .queue-callout ul { padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }

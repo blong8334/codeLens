@@ -271,11 +271,32 @@ For GitLab, Gerrit, Phabricator, internal tools, or a diff someone sent you: dow
 # In a clone checked out at the change's base revision
 npx @blong8334/codelens diff ~/Downloads/change.diff -p claude-code
 
-# Or from the clipboard, against a given base; --key keeps your accepted changes across revisions
-pbpaste | npx @blong8334/codelens diff - --base origin/main --key CR-1234 --title "Retry failed uploads"
+# Or from the clipboard, against a given base
+pbpaste | npx @blong8334/codelens diff - --base origin/main --title "Retry failed uploads"
 ```
 
-The patch is applied as a commit object only. Your working tree, index and branches are not touched. `git format-patch` files supply the title and description; otherwise, pass `--title` and `--description` (`@file` reads it from a file). Use `--strip 0` when the patch's paths have no `a/` and `b/` prefixes, and `--directory <dir>` when it was made inside a subfolder.
+The patch is applied as a commit object only. Your working tree, index and branches are not touched. `git format-patch` files supply the title and description; otherwise, pass `--title` and `--description` (`@file` reads it from a file). Accepted changes are kept per repository and tied to each change's exact lines: download the next revision and only what the author changed reopens. (`--key <id>` keeps a review's marks separate.) Use `--strip 0` when the patch's paths have no `a/` and `b/` prefixes, and `--directory <dir>` when it was made inside a subfolder.
+
+### Your review preferences (optional)
+
+Every reviewer cares about different things. Write yours in your own words in `~/.config/codelens/preferences.md`. CodeLens uses them for the brief and for the notes on each change. Without the file, nothing changes.
+
+```markdown
+Care about:
+- performance
+- DRY: duplicating code that already exists
+- real blast radius, not compiler-checked signature updates
+
+Skip:
+- tests (coverage is checked automatically)
+- renames and moves with no logic change
+```
+
+A **Skip** list that mentions tests or renames/moves takes those out of the review queue. They're listed under "Skipped by your preferences" and don't count as left to review. Use `--prefs <file>` for a different file, or `--no-prefs` to ignore it for one run.
+
+Independent of preferences:
+- **Moves and renames** are matched by their body. A function moved or renamed without other edits is one "moved" item, not a deletion plus an addition.
+- **Compiler-checked signature changes** in typed languages aren't counted as breaking: when every caller is updated in the same change, the build checks they match.
 
 ## Review your own diffs
 

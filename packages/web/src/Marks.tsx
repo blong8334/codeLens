@@ -206,8 +206,10 @@ export function MarksProvider({ graph, children }: { graph: CodeGraph; children:
     return out;
   }, [graph, fnPrints]);
   const progress = useMemo((): Progress => {
-    const files = review?.files ?? [];
-    const ids = Object.keys(fnPrints);
+    // What the reviewer's preferences skip is not part of the work left.
+    const skip = new Set(review?.skipped ?? []);
+    const files = (review?.files ?? []).filter((f) => !skip.has(f.path));
+    const ids = Object.keys(fnPrints).filter((id) => !skip.has(id));
     const done = (id: string) => accepted.has(id) || reviewed.has(id.slice(0, id.indexOf('#')));
     let doneLines = 0;
     for (const f of files) {

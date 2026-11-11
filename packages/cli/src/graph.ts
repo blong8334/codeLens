@@ -81,6 +81,46 @@ async function inspectWith(dir: string, opts: InspectOptions, open: { close(): v
     }
   }
 
+  // 2b. Moves and renames: a function deleted in one place and added in another with the same body
+  // (ignoring its own name and whitespace) is one moved function, not two changes. One that kept its
+  // name but changed file is a move too, with whatever was edited along the way as its diff.
+  const moved = new Map<string, { from: string; renamed: boolean; exact: boolean }>();
+  {
+    const added = new Map<string, { path: string; fn: ExtractedFn }>();
+    for (const [id, st] of status) {
+      if (st !== 'added') continue;
+      const path = id.slice(0, id.indexOf('#'));
+      const fn = headFiles.get(path)?.functions.find((f) => fnId(path, f.qualifiedName) === id);
+      if (fn && fn.qualifiedName !== '(top level)') added.set(id, { path, fn });
+    }
+    const body = (fn: ExtractedFn) => fn.source.split(fn.name).join('\u0000').replace(/\s+/g, '');
+    const byBody = new Map<string, string[]>();
+    const byName = new Map<string, string[]>();
+    for (const [id, { fn }] of added) {
+      (byBody.get(body(fn)) ?? byBody.set(body(fn), []).get(body(fn))!).push(id);
+      (byName.get(fn.qualifiedName) ?? byName.set(fn.qualifiedName, []).get(fn.qualifiedName)!).push(id);
+    }
+    const deletedNames = new Map<string, number>();
+    for (const d of deleted) deletedNames.set(d.fn.qualifiedName, (deletedNames.get(d.fn.qualifiedName) ?? 0) + 1);
+    const taken = new Set<string>();
+    const pair = (d: (typeof deleted)[number], id: string, exact: boolean) => {
+      taken.add(id);
+      status.set(id, 'modified');
+      beforeFns.set(id, d.fn);
+      moved.set(id, { from: fnId(d.file.path, d.fn.qualifiedName), renamed: d.fn.name !== added.get(id)!.fn.name, exact });
+    };
+    for (const d of [...deleted]) {
+      if (d.fn.qualifiedName === '(top level)') continue;
+      const same = (byBody.get(body(d.fn)) ?? []).filter((id) => !taken.has(id));
+      const named = (byName.get(d.fn.qualifiedName) ?? []).filter((id) => !taken.has(id));
+      // Only unambiguous matches: one candidate, and (by name) one deleted function of that name.
+      const match = same.length === 1 ? { id: same[0], exact: true } : named.length === 1 && deletedNames.get(d.fn.qualifiedName) === 1 ? { id: named[0], exact: false } : undefined;
+      if (!match) continue;
+      pair(d, match.id, match.exact);
+      deleted.splice(deleted.indexOf(d), 1);
+    }
+  }
+
   // 3. Build the full call graph.
   const nodes = new Map<string, FnNode>();
   const decorators = new Map<string, string[]>();
@@ -88,6 +128,7 @@ async function inspectWith(dir: string, opts: InspectOptions, open: { close(): v
     const id = fnId(file.path, fn.qualifiedName);
     const before = beforeFns.get(id);
     const node = makeNode(file, fn, st);
+    if (moved.has(id)) node.moved = moved.get(id);
     if (st === 'modified' && before) {
       node.before = { signature: before.signature, source: before.source, throws: before.throws };
       node.after = { source: fn.source };

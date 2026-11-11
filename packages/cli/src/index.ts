@@ -12,6 +12,7 @@ import { explore } from './explore.ts';
 import { WORKING_TREE } from './git.ts';
 import { buildBrief } from './brief.ts';
 import { commitPatch, patchInfo } from './patch.ts';
+import { applyPreferences, defaultPreferencesPath, loadPreferences } from './preferences.ts';
 import { buildGuide } from './guide.ts';
 import { describeGraph } from './purpose.ts';
 import { cacheDir, defaultStorePath, openStore as openStoreAt, type Store } from './store/index.ts';
@@ -164,6 +165,8 @@ program
   .option('--store <file>', `SQLite file or postgres:// URL (default: ${defaultStorePath()})`)
   .option('--no-store', 'do not read or write the store')
   .option('--no-source', 'leave source code and diffs out of the written graph')
+  .option('--prefs <file>', `your review preferences: what you care about and skip (default: ${defaultPreferencesPath()}, if it exists)`)
+  .option('--no-prefs', 'ignore your review preferences')
   .option('--no-types', 'skip the TypeScript checker (name matching only)')
   .action(async (repo: string, o) => {
     const { reviewBase } = await import('./git.ts');
@@ -174,6 +177,7 @@ program
     log(`Reviewing ${o.head === WORKING_TREE ? 'the working tree' : o.head} against ${label}`);
     const store = await openStore(o);
     let graph = await inspect(root, { base, head: o.head, maxDepth: Number(o.depth), full: false, store, types: o.types, log });
+    applyPreferences(graph, await usePreferences(o.prefs));
     const provider = await providerFor(o.provider, o.model, o.baseUrl);
     log(`Enriching with ${provider.name}…`);
     graph = await enrich(graph, provider, { concurrency: Number(o.concurrency), log, purposes: o.purpose, store });
@@ -214,6 +218,8 @@ program
   .option('--store <file>', `SQLite file or postgres:// URL (default: ${defaultStorePath()})`)
   .option('--no-store', 'do not read or write the store')
   .option('--no-source', 'leave source code and diffs out of the written graph')
+  .option('--prefs <file>', `your review preferences: what you care about and skip (default: ${defaultPreferencesPath()}, if it exists)`)
+  .option('--no-prefs', 'ignore your review preferences')
   .option('--no-types', 'skip the TypeScript checker (name matching only)')
   .action(async (prArg: string, repo: string, o) => {
     const { checkoutPr } = await import('./github.ts');
@@ -221,6 +227,7 @@ program
     const pr = await checkoutPr(prArg, here(repo), log);
     const store = await openStore(o);
     let graph = await inspect(pr.root, { base: pr.base, head: pr.head, maxDepth: Number(o.depth), full: false, store, types: o.types, log });
+    applyPreferences(graph, await usePreferences(o.prefs));
     const provider = await providerFor(o.provider, o.model, o.baseUrl);
     log(`Enriching with ${provider.name}…`);
     graph.meta.pr = pr.info;
@@ -257,7 +264,7 @@ program
   .option('--directory <dir>', 'prepend this directory to patch paths (patch made inside a subfolder)')
   .option('-t, --title <text>', 'title for the brief (default: the patch subject, if any)')
   .option('--description <text>', "the author's description, or @file to read it from a file")
-  .option('-k, --key <id>', 'review id, e.g. the CR number, so accepted changes carry over to the next revision (default: the patch file name)')
+  .option('-k, --key <id>', 'keep this review\'s accepted changes separate, e.g. a CR number (default: one set per repository; accepts are tied to the exact changed lines, so revisions keep them and other changes do not)')
   .option('-p, --provider <name>', 'heuristic | claude-code | claude | openai', 'heuristic')
   .option('-m, --model <id>', 'model id for the chosen provider')
   .option('--base-url <url>', 'openai provider: an OpenAI-compatible API')
@@ -270,6 +277,8 @@ program
   .option('--store <file>', `SQLite file or postgres:// URL (default: ${defaultStorePath()})`)
   .option('--no-store', 'do not read or write the store')
   .option('--no-source', 'leave source code and diffs out of the written graph')
+  .option('--prefs <file>', `your review preferences: what you care about and skip (default: ${defaultPreferencesPath()}, if it exists)`)
+  .option('--no-prefs', 'ignore your review preferences')
   .option('--no-types', 'skip the TypeScript checker (name matching only)')
   .action(async (patchArg: string, repo: string, o) => {
     const { Repo } = await import('./git.ts');
@@ -287,8 +296,11 @@ program
     const store = await openStore(o);
     let graph = await inspect(root, { base: o.base, head, maxDepth: Number(o.depth), full: false, store, types: o.types, log });
     graph.meta.change = { title, description, source };
-    const key = o.key ?? (fromStdin ? undefined : basename(patchArg).replace(/\.(diff|patch)$/i, ''));
-    if (graph.review) graph.review.key = key ? `patch:${root}:${key}` : `patch:${root}:${head}`;
+    // One set of marks per repository by default: a mark is tied to a change's exact lines, so a new
+    // revision of the same change keeps it and a different change touching the same code does not.
+    const key: string | undefined = o.key;
+    if (graph.review) graph.review.key = key ? `patch:${root}:${key}` : `patch:${root}`;
+    applyPreferences(graph, await usePreferences(o.prefs));
     const provider = await providerFor(o.provider, o.model, o.baseUrl);
     log(`Enriching with ${provider.name}…`);
     graph = await enrich(graph, provider, { concurrency: Number(o.concurrency), log, purposes: o.purpose, store });
@@ -305,6 +317,13 @@ program
     log(`Overall risk: ${report.risk.level} (${report.risk.score.toFixed(2)}) · ${report.changes.length} functions changed`);
     if (o.open) await openViewer(out, Number(o.port));
   });
+
+/** Load review preferences (an explicit path must exist; the default one is optional) and say so. */
+async function usePreferences(path: string | boolean | undefined) {
+  const prefs = await loadPreferences(path === true ? undefined : path);
+  if (prefs) log(`Using your review preferences (${prefs.source})${[prefs.skipTests && 'skipping tests', prefs.skipMoves && 'skipping moves and renames'].filter(Boolean).map((x) => `, ${x}`).join('')}`);
+  return prefs;
+}
 
 async function readStdin(): Promise<string> {
   let s = '';
