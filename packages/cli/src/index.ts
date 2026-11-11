@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { inspect } from './graph.ts';
 import { enrich, heuristicProvider, type EnrichmentProvider } from './enrich.ts';
 import { explore } from './explore.ts';
@@ -88,7 +89,9 @@ async function providerFor(name: string, model?: string, baseURL?: string): Prom
 
 const program = new Command()
   .name('codelens')
-  .description('Review a diff, or explore a whole codebase, as a layered visual call graph.');
+  .description('Review a diff, or explore a whole codebase, as a layered visual call graph.')
+  // package.json sits one level up from both src/index.ts and the bundled dist/codelens.js.
+  .version(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version);
 
 program
   .command('inspect')
@@ -300,7 +303,11 @@ program
     let root: string;
     let base: string;
     let head: string;
-    if (patches.length === 1 && !patches[0].dir) {
+    // One patch inside a clone applies to that clone; anything else (several patches, a named
+    // package, or a folder that holds packages rather than being one) is matched to packages.
+    const inClone = await Repo.open(here(repo)).then(() => true, () => false);
+    const single = patches.length === 1 && !patches[0].dir && inClone;
+    if (single) {
       root = (await Repo.open(here(repo))).root;
       base = o.base;
       head = await commitPatch(root, o.base, patches[0].text, { strip, directory: o.directory });
@@ -320,7 +327,7 @@ program
     // One set of marks per repository by default: a mark is tied to a change's exact lines, so a new
     // revision of the same change keeps it and a different change touching the same code does not.
     const key: string | undefined = o.key;
-    const scope = patches.length === 1 && !patches[0].dir ? root : `workspace:${here(repo)}`;
+    const scope = single ? root : `workspace:${here(repo)}`;
     if (graph.review) graph.review.key = key ? `patch:${scope}:${key}` : `patch:${scope}`;
     applyPreferences(graph, await usePreferences(o.prefs));
     const provider = await providerFor(o.provider, o.model, o.baseUrl);
