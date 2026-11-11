@@ -286,6 +286,12 @@ npx @blong8334/codelens diff ~/Downloads/*.diff -p claude-code
 
 Each diff is matched to the package whose files it changes, and the packages are combined into one review: one brief, one queue, one map, with calls between packages linked. When a diff could fit more than one package (for example, one that only adds new files), name it: `PackageName=~/Downloads/x.diff`. The packages are only read; the combined snapshot lives in the CodeLens cache.
 
+### Ask about the change
+
+When a review is opened with a model (for example `-p claude-code`), each change in the review queue has an **✦ Ask** button. It opens a chat panel where you can ask about the change: "why is this risky?", "does similar code already exist?", "what breaks for the callers?". Each question includes the change you have open, and the conversation continues as you move through the queue.
+
+With Claude Code, it can also read the whole codebase as it is after the change: a read-only copy in the CodeLens cache, with file tools only (Read, Grep, Glob), so it can't edit files or run commands. The other providers answer from the review itself. `codelens view` reuses the model the review was made with; pass `-p` to pick another.
+
 ### Your review preferences (optional)
 
 Every reviewer cares about different things. Write yours in your own words in `~/.config/codelens/preferences.md`. CodeLens uses them for the brief and for the notes on each change. Without the file, nothing changes.

@@ -64,10 +64,10 @@ async function openStore(o: { store?: string | boolean }): Promise<Store | undef
 }
 
 /** Serve a graph with the built canvas and open it in the browser. */
-async function openViewer(graphPath: string, port?: number) {
+async function openViewer(graphPath: string, port?: number, provider?: EnrichmentProvider) {
   // A viewer may already be running for another graph; each `view` gets its own port.
   const { view } = await import('./view.ts');
-  await view(graphPath, { port, log });
+  await view(graphPath, { port, log, provider: provider?.chat ? provider : undefined });
 }
 
 async function providerFor(name: string, model?: string, baseURL?: string): Promise<EnrichmentProvider> {
@@ -255,7 +255,7 @@ program
     await writeFile(md, reviewMarkdown(report));
     log(`Wrote ${md}`);
     log(`Overall risk: ${report.risk.level} (${report.risk.score.toFixed(2)}) · ${report.changes.length} functions changed`);
-    if (o.open) await openViewer(out, Number(o.port));
+    if (o.open) await openViewer(out, Number(o.port), provider);
   });
 
 program
@@ -344,7 +344,7 @@ program
     await writeFile(md, reviewMarkdown(report));
     log(`Wrote ${md}`);
     log(`Overall risk: ${report.risk.level} (${report.risk.score.toFixed(2)}) · ${report.changes.length} functions changed`);
-    if (o.open) await openViewer(out, Number(o.port));
+    if (o.open) await openViewer(out, Number(o.port), provider);
   });
 
 /** Load review preferences (an explicit path must exist; the default one is optional) and say so. */
@@ -402,6 +402,9 @@ program
   .argument('[graph]', 'graph JSON written by explore or inspect')
   .option('--port <n>', 'port to serve on (the next free one is used if taken)', '5173')
   .option('--no-open', 'do not open a browser')
+  .option('-p, --provider <name>', 'model for "Ask" in the review: claude-code | claude | openai (default: the one the review was made with)')
+  .option('-m, --model <id>', 'model id for the chosen provider')
+  .option('--base-url <url>', 'openai provider: an OpenAI-compatible API')
   .action(async (file: string | undefined, o) => {
     let path = file ? here(file) : undefined;
     if (!path) {
@@ -421,7 +424,11 @@ program
       path = latest;
     }
     const { view } = await import('./view.ts');
-    await view(path, { port: Number(o.port), open: o.open, log });
+    // "Ask" uses the model the review was made with (e.g. claude-code:opus), unless told otherwise.
+    const made = (JSON.parse(await readFile(path, 'utf8')) as CodeGraph).enrichment?.provider;
+    const [name, model] = o.provider ? [o.provider, o.model] : made && made !== 'heuristic' ? [made.split(':')[0], made.split(':').slice(1).join(':') || undefined] : [undefined, undefined];
+    const provider = name ? await providerFor(name, model, o.baseUrl).catch(() => undefined) : undefined;
+    await view(path, { port: Number(o.port), open: o.open, log, provider: provider?.chat ? provider : undefined });
   });
 
 program

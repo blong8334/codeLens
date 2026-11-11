@@ -84,5 +84,18 @@ export function claudeProvider(opts: { model?: string; effort?: 'low' | 'medium'
     async describeGuide(input) {
       return toGuide(await structured(GuideSchema, GUIDE_SYSTEM, guidePrompt(input)));
     },
+
+    async chat(req) {
+      const response = await client.beta.messages.create({
+        model,
+        max_tokens: 8000,
+        betas: ['server-side-fallback-2026-07-01'],
+        fallbacks: 'default',
+        output_config: { effort: 'medium' },
+        system: req.system,
+        messages: req.messages,
+      });
+      return { text: response.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('').trim() };
+    },
   };
 }

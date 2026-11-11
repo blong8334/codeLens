@@ -1,4 +1,5 @@
 import type { Store } from './store/index.ts';
+import type { ChatReply, ChatRequest } from './chat.ts';
 import type {
   CodeGraph,
   ContractChange,
@@ -39,6 +40,8 @@ export interface EnrichmentProvider extends Describer {
   name: string;
   enrichNode(ctx: NodeContext): Promise<NodeEnrichment>;
   summarize(graph: CodeGraph, ranked: FnNode[]): Promise<string>;
+  /** Answer the reviewer's questions about the change (absent for the offline provider). */
+  chat?(req: ChatRequest): Promise<ChatReply>;
 }
 
 export async function enrich(

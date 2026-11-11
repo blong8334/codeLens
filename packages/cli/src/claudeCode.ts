@@ -25,6 +25,10 @@ import {
   toBrief,
 } from './prompts.ts';
 import type { EnrichmentProvider } from './enrich.ts';
+import type { ChatRequest } from './chat.ts';
+
+/** Read-only file tools for chat: look around the codebase, change nothing, run nothing. */
+const READ_TOOLS = 'Read,Grep,Glob';
 
 /**
  * Enrichment through the local Claude Code CLI (`claude -p`). Runs on the signed-in
@@ -71,6 +75,23 @@ export function claudeCodeProvider(opts: { model?: string } = {}): EnrichmentPro
       const result = await runClaude({ model, system: GUIDE_SYSTEM, prompt: guidePrompt(input), jsonSchema: guideSchema });
       return toGuide(GuideSchema.parse(result.structured_output));
     },
+
+    async chat(req: ChatRequest) {
+      const last = req.messages[req.messages.length - 1]?.content ?? '';
+      // A new conversation (or one whose session is gone) gets the transcript so far.
+      const prompt = req.session || req.messages.length <= 1 ? last : req.messages.map((m) => `${m.role === 'user' ? 'Reviewer' : 'You'}: ${m.content}`).join('\n\n');
+      const result = await runClaude({
+        model,
+        system: req.system,
+        append: true,
+        prompt,
+        tools: req.cwd ? READ_TOOLS : '',
+        cwd: req.cwd,
+        resume: req.session,
+        persist: true,
+      });
+      return { text: String(result.result ?? '').trim(), session: result.session_id };
+    },
   };
 }
 
@@ -85,22 +106,40 @@ interface ClaudeResult {
   subtype?: string;
   result?: string;
   structured_output?: unknown;
+  session_id?: string;
 }
 
-function runClaude(opts: { model: string; system: string; prompt: string; jsonSchema?: string }): Promise<ClaudeResult> {
+function runClaude(opts: {
+  model: string;
+  system: string;
+  prompt: string;
+  jsonSchema?: string;
+  /** Add to Claude Code's own system prompt (keeps its tool use) instead of replacing it. */
+  append?: boolean;
+  /** Built-in tools to allow; '' (the default) for pure analysis, where everything is in the prompt. */
+  tools?: string;
+  cwd?: string;
+  resume?: string;
+  /** Keep the session, so a later call can resume it. */
+  persist?: boolean;
+}): Promise<ClaudeResult> {
+  const tools = opts.tools ?? '';
   const args = [
     '-p',
     '--output-format', 'json',
     '--model', opts.model,
-    '--system-prompt', opts.system,
-    // Pure analysis: everything the model needs is in the prompt.
-    '--tools', '',
-    '--no-session-persistence',
+    opts.append ? '--append-system-prompt' : '--system-prompt', opts.system,
+    '--tools', tools,
+    // Only CodeLens's tools: none of the user's MCP servers.
+    '--strict-mcp-config',
   ];
+  if (tools) args.push('--allowedTools', tools);
+  if (!opts.persist) args.push('--no-session-persistence');
+  if (opts.resume) args.push('--resume', opts.resume);
   if (opts.jsonSchema) args.push('--json-schema', opts.jsonSchema);
 
   return new Promise((resolve, reject) => {
-    const child = spawn(process.env.CLAUDE_BIN ?? 'claude', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.env.CLAUDE_BIN ?? 'claude', args, { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => (stdout += d));

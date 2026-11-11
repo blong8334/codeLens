@@ -110,6 +110,10 @@ export function openaiProvider(opts: OpenAIOptions = {}): EnrichmentProvider {
     async describeGuide(input) {
       return toGuide(await structured(GuideSchema, 'package_guide', GUIDE_SYSTEM, guidePrompt(input)));
     },
+
+    async chat(req) {
+      return { text: (await complete({ messages: [{ role: 'system', content: req.system }, ...req.messages] })).trim() };
+    },
   };
 }
 

@@ -6,6 +6,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { userInfo } from 'node:os';
 import { openStore, type Store } from './store/index.ts';
 import type { CodeGraph } from './types.ts';
+import type { EnrichmentProvider } from './enrich.ts';
+import { chatFocus, chatSystem, headCheckout, type ChatTurn } from './chat.ts';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
@@ -41,7 +43,10 @@ function ensureBuilt(log: (m: string) => void) {
   if (r.status !== 0) throw new Error('building the canvas failed (run `npm run build` to see why)');
 }
 
-export async function view(graphPath: string, opts: { port?: number; open?: boolean; store?: string; log: (m: string) => void }): Promise<Server> {
+export async function view(
+  graphPath: string,
+  opts: { port?: number; open?: boolean; store?: string; log: (m: string) => void; /** Answers questions in the review ("Ask"), when it can chat. */ provider?: EnrichmentProvider },
+): Promise<Server> {
   ensureBuilt(opts.log);
   // Any web page can send requests to localhost. Writes therefore need this token, which only the
   // CodeLens page itself receives (in its HTML), and every API call must name this server as its
@@ -49,11 +54,20 @@ export async function view(graphPath: string, opts: { port?: number; open?: bool
   const token = randomBytes(24).toString('hex');
   let storePromise: Promise<Store> | undefined;
   const getStore = () => (storePromise ??= openStore(opts.store));
+  // Chat with file access reads a copy of the code after the change, made on the first question.
+  let checkout: Promise<string> | undefined;
+  const chat = opts.provider?.chat
+    ? {
+        provider: opts.provider,
+        canRead: opts.provider.name.startsWith('claude-code'),
+        checkout: (graph: CodeGraph) => (checkout ??= headCheckout(graph).catch((err) => ((checkout = undefined), Promise.reject(err)))),
+      }
+    : undefined;
   let port = 0;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     try {
-      if (url.pathname.startsWith('/api/')) return await api(req, res, url, { graphPath, token, port: () => port, store: getStore });
+      if (url.pathname.startsWith('/api/')) return await api(req, res, url, { graphPath, token, port: () => port, store: getStore, chat });
       if (url.pathname === '/codelens.graph.json') {
         // Read on every request, so re-running explore and reloading the page shows the new graph.
         res.writeHead(200, { 'content-type': TYPES['.json'], 'cache-control': 'no-store' }).end(await readFile(graphPath));
@@ -102,7 +116,13 @@ function openBrowser(url: string) {
 
 const MAX_BODY = 64 * 1024;
 
-async function api(req: IncomingMessage, res: ServerResponse, url: URL, ctx: { graphPath: string; token: string; port: () => number; store: () => Promise<Store> }) {
+interface ChatCtx {
+  provider: EnrichmentProvider;
+  canRead: boolean;
+  checkout: (graph: CodeGraph) => Promise<string>;
+}
+
+async function api(req: IncomingMessage, res: ServerResponse, url: URL, ctx: { graphPath: string; token: string; port: () => number; store: () => Promise<Store>; chat?: ChatCtx }) {
   const send = (status: number, data: unknown) => res.writeHead(status, { 'content-type': TYPES['.json'], 'cache-control': 'no-store' }).end(JSON.stringify(data));
   const hosts = [`localhost:${ctx.port()}`, `127.0.0.1:${ctx.port()}`];
   if (!hosts.includes(req.headers.host ?? '')) return send(403, { error: 'wrong host' });
@@ -112,7 +132,30 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL, ctx: { g
   const graph = JSON.parse(await readFile(ctx.graphPath, 'utf8')) as CodeGraph;
   if (url.pathname === '/api/session' && req.method === 'GET') {
     const canPost = !!graph.meta.pr && canPostToGitHub();
-    return send(200, { pr: !!graph.meta.pr, canPost, login: canPost ? await viewerLogin() : undefined, marks: !!graph.review });
+    return send(200, { pr: !!graph.meta.pr, canPost, login: canPost ? await viewerLogin() : undefined, marks: !!graph.review, chat: ctx.chat ? { provider: ctx.chat.provider.name, canRead: ctx.chat.canRead } : null });
+  }
+
+  // "Ask": questions about the change, answered by the review's model.
+  if (url.pathname === '/api/chat') {
+    if (!ctx.chat) return send(404, { error: 'no model to chat with: open the review with -p claude-code (or another model)' });
+    if (req.method !== 'POST') return send(405, { error: 'method not allowed' });
+    const denied = guardWrite(req, ctx.token);
+    if (denied) return send(denied === 'expected JSON' ? 415 : 403, { error: denied });
+    const body = await readBody(req, 1 << 20);
+    const messages = (Array.isArray(body.messages) ? body.messages : [])
+      .filter((m): m is ChatTurn => !!m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
+      .slice(-40);
+    if (messages[messages.length - 1]?.role !== 'user') return send(400, { error: 'ask a question' });
+    // The change the reviewer has open goes with their question.
+    const focus = chatFocus(graph, typeof body.focus === 'string' ? body.focus : undefined);
+    if (focus) messages[messages.length - 1] = { role: 'user', content: `${focus}\n\n${messages[messages.length - 1].content}` };
+    try {
+      const cwd = ctx.chat.canRead ? await ctx.chat.checkout(graph) : undefined;
+      const reply = await ctx.chat.provider.chat!({ system: chatSystem(graph, { canRead: !!cwd }), messages, cwd, session: typeof body.session === 'string' ? body.session : undefined });
+      return send(200, reply);
+    } catch (err) {
+      return send(502, { error: (err as Error).message });
+    }
   }
 
   // "I'm good with this file" marks: CodeLens's own, so they work for any platform (or none).
@@ -211,13 +254,13 @@ function gitHubMessage(raw: string): string {
   return messages.length ? [...new Set(messages)].join(' — ') : raw.slice(0, 300);
 }
 
-function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+function readBody(req: IncomingMessage, max = MAX_BODY): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => {
       size += c.length;
-      if (size > MAX_BODY) {
+      if (size > max) {
         reject(new Error('request too large'));
         req.destroy();
       } else chunks.push(c);

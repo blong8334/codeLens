@@ -3,6 +3,7 @@ import { displayName, ENTRY_LABEL, isDone, isTest, riskLevel, type FnNode, type 
 import { DiffTable, functionHunks, hunksFor, OutdatedThreads, parseHunks, SplitSwitch, useSplitView } from './DiffViewer.tsx';
 import { ApproveReview, FunctionDiscussion, useDiscussion } from './Discussion.tsx';
 import { codeLinks } from './links.ts';
+import { ChatPanel, useChatInfo } from './Chat.tsx';
 import { ResetMarks, ReviewProgress, useMarks, type MarkState } from './Marks.tsx';
 import { NavButtons, Prose, type NavControls } from './Panel.tsx';
 import { RiskBar, StatusBadge } from './nodes.tsx';
@@ -55,6 +56,8 @@ export function ReviewQueue({ ix, nav, at, onAt, onMap, onDiff }: Props) {
   const marks = useMarks();
   const [hideDone, setHideDone] = useState(false);
   const [showSkipped, setShowSkipped] = useState(false);
+  const chat = useChatInfo();
+  const [chatOpen, setChatOpen] = useState(false);
   const commentBox = useRef<HTMLDivElement>(null);
   // The pending "move to the next change" after an accept: cancelled by anything else you do.
   const advance = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -184,7 +187,7 @@ export function ReviewQueue({ ix, nav, at, onAt, onMap, onDiff }: Props) {
 
       <main className="queue-main">
         {current.kind === 'fn' ? (
-          <FunctionReview ix={ix} item={current} mark={markOf(current)} commentBox={commentBox} onAccept={accept} onStep={step} onMap={onMap} onDiff={onDiff} open={open} />
+          <FunctionReview ix={ix} item={current} mark={markOf(current)} commentBox={commentBox} onAccept={accept} onStep={step} onMap={onMap} onDiff={onDiff} open={open} onAsk={chat ? () => setChatOpen(!chatOpen) : undefined} asking={chatOpen} />
         ) : (
           <FileReview ix={ix} file={current.file} mark={markOf(current)} onAccept={accept} onStep={step} onDiff={onDiff} open={open} />
         )}
@@ -195,6 +198,7 @@ export function ReviewQueue({ ix, nav, at, onAt, onMap, onDiff }: Props) {
           <Context ix={ix} fn={current.fn} queue={queue} onAt={goTo} onMap={onMap} />
         </aside>
       )}
+      {chat && chatOpen && <ChatPanel chat={chat} focus={current.kind === 'fn' ? current.fn : undefined} onClose={() => setChatOpen(false)} />}
       {lastAccepted && done(lastAccepted) && (
         <div className="undo-bar" role="status">
           Accepted <span className="mono">{lastAccepted.kind === 'fn' ? displayName(lastAccepted.fn) : lastAccepted.file.path}</span>
@@ -254,6 +258,8 @@ function FunctionReview({
   onMap,
   onDiff,
   open,
+  onAsk,
+  asking,
 }: {
   ix: Index;
   item: Extract<QueueItem, { kind: 'fn' }>;
@@ -264,6 +270,9 @@ function FunctionReview({
   onMap: (id: string) => void;
   onDiff: (path: string, fnId?: string) => void;
   open: number;
+  /** Open or close "Ask" (absent when no model is available). */
+  onAsk?: () => void;
+  asking?: boolean;
 }) {
   const { fn } = item;
   const e = fn.enrichment;
@@ -305,6 +314,11 @@ function FunctionReview({
         <button className="btn" onClick={() => onMap(fn.id)} title="Callers and callees on the map (z)">
           Map <kbd>z</kbd>
         </button>
+        {onAsk && (
+          <button className={`btn ask-btn ${asking ? 'is-on' : ''}`} onClick={onAsk} title="Ask the model about this change">
+            ✦ Ask
+          </button>
+        )}
       </Actions>
 
       {(item.reason || e?.summary) && (
