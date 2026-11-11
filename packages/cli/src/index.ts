@@ -11,6 +11,7 @@ import { enrich, heuristicProvider, type EnrichmentProvider } from './enrich.ts'
 import { explore } from './explore.ts';
 import { WORKING_TREE } from './git.ts';
 import { buildBrief } from './brief.ts';
+import { commitPatch, patchInfo } from './patch.ts';
 import { buildGuide } from './guide.ts';
 import { describeGraph } from './purpose.ts';
 import { cacheDir, defaultStorePath, openStore as openStoreAt, type Store } from './store/index.ts';
@@ -245,6 +246,71 @@ program
     log(`Overall risk: ${report.risk.level} (${report.risk.score.toFixed(2)}) · ${report.changes.length} functions changed`);
     if (o.open) await openViewer(out, Number(o.port));
   });
+
+program
+  .command('diff')
+  .description('Review a patch from any code review tool (a downloaded .diff or .patch) against a local clone')
+  .argument('<patch>', 'unified diff or `git format-patch` file; - reads stdin')
+  .argument('[repo]', 'local clone the patch applies to', '.')
+  .option('-b, --base <ref>', 'revision the patch was written against', 'HEAD')
+  .option('--strip <n>', 'leading path components to drop from patch paths, as `git apply -p` (default 1: a/ b/)')
+  .option('--directory <dir>', 'prepend this directory to patch paths (patch made inside a subfolder)')
+  .option('-t, --title <text>', 'title for the brief (default: the patch subject, if any)')
+  .option('--description <text>', "the author's description, or @file to read it from a file")
+  .option('-k, --key <id>', 'review id, e.g. the CR number, so accepted changes carry over to the next revision (default: the patch file name)')
+  .option('-p, --provider <name>', 'heuristic | claude-code | claude | openai', 'heuristic')
+  .option('-m, --model <id>', 'model id for the chosen provider')
+  .option('--base-url <url>', 'openai provider: an OpenAI-compatible API')
+  .option('-c, --concurrency <n>', 'parallel LLM requests', '4')
+  .option('-d, --depth <n>', 'caller hops to include around changes', '4')
+  .option('-o, --out <file>', 'graph JSON path (default: in the CodeLens cache directory)')
+  .option('--no-open', 'write the graph and review without opening the canvas')
+  .option('--port <n>', 'port for the canvas', '5173')
+  .option('--no-purpose', 'skip the "what / why" descriptions')
+  .option('--store <file>', `SQLite file or postgres:// URL (default: ${defaultStorePath()})`)
+  .option('--no-store', 'do not read or write the store')
+  .option('--no-source', 'leave source code and diffs out of the written graph')
+  .option('--no-types', 'skip the TypeScript checker (name matching only)')
+  .action(async (patchArg: string, repo: string, o) => {
+    const { Repo } = await import('./git.ts');
+    const { reviewMarkdown, reviewReport } = await import('./review.ts');
+    const fromStdin = patchArg === '-';
+    const text = fromStdin ? await readStdin() : await readFile(here(patchArg), 'utf8');
+    if (!/^(@@ |diff --git |--- )/m.test(text)) throw new Error(`${fromStdin ? 'stdin' : patchArg} does not look like a unified diff`);
+    const root = (await Repo.open(here(repo))).root;
+    const head = await commitPatch(root, o.base, text, { strip: o.strip === undefined ? undefined : Number(o.strip), directory: o.directory });
+    const info = patchInfo(text);
+    const source = fromStdin ? 'patch from stdin' : basename(patchArg);
+    const title = o.title ?? info.title;
+    const description = o.description?.startsWith('@') ? await readFile(here(o.description.slice(1)), 'utf8') : (o.description ?? info.description);
+    log(`Applied ${source} on ${o.base}${title ? ` — ${title}` : ''}`);
+    const store = await openStore(o);
+    let graph = await inspect(root, { base: o.base, head, maxDepth: Number(o.depth), full: false, store, types: o.types, log });
+    graph.meta.change = { title, description, source };
+    const key = o.key ?? (fromStdin ? undefined : basename(patchArg).replace(/\.(diff|patch)$/i, ''));
+    if (graph.review) graph.review.key = key ? `patch:${root}:${key}` : `patch:${root}:${head}`;
+    const provider = await providerFor(o.provider, o.model, o.baseUrl);
+    log(`Enriching with ${provider.name}…`);
+    graph = await enrich(graph, provider, { concurrency: Number(o.concurrency), log, purposes: o.purpose, store });
+    graph.enrichment!.brief = await buildBrief(graph, provider, { store, log });
+    await store?.close();
+    const report = reviewReport(graph);
+    if (o.source === false) stripSource(graph);
+    const name = `${basename(root)}-${(key ?? head.slice(0, 7)).replace(/[^\w.-]+/g, '_')}`;
+    const out = o.out ? here(o.out) : join(cacheDir(), 'graphs', `${name}.graph.json`);
+    await writeJson(out, graph);
+    const md = out.replace(/\.graph\.json$|\.json$/, '') + '.review.md';
+    await writeFile(md, reviewMarkdown(report));
+    log(`Wrote ${md}`);
+    log(`Overall risk: ${report.risk.level} (${report.risk.score.toFixed(2)}) · ${report.changes.length} functions changed`);
+    if (o.open) await openViewer(out, Number(o.port));
+  });
+
+async function readStdin(): Promise<string> {
+  let s = '';
+  for await (const chunk of process.stdin) s += chunk;
+  return s;
+}
 
 program
   .command('explore')

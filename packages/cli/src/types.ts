@@ -117,6 +117,8 @@ export interface CodeGraph {
     generatedAt: string;
     /** Set when the graph reviews a GitHub pull request (`codelens pr`). */
     pr?: PullRequestInfo;
+    /** Set when the graph reviews a patch file (`codelens diff`): a change from any review tool. */
+    change?: { title?: string; description?: string; source: string };
     /** False when written with --no-source: nodes carry no code or diffs. */
     sourceIncluded?: boolean;
     /** Where the code can be browsed online, for links from the canvas. */

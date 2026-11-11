@@ -146,7 +146,7 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
   // Explore mode opens on the guide unless a link asks for a specific function or the map.
   // Both modes open on a landing page — the package guide, or the review brief — unless a link
   // asks for a specific function or the map.
-  const landing = ix.explore || !!graph.meta.pr || !!graph.enrichment;
+  const landing = ix.explore || !!graph.meta.pr || !!graph.meta.change || !!graph.enrichment;
   const landingName = ix.explore ? 'Guide' : 'Brief';
   const [view, setView] = useState<View>(() =>
     params.get('view') === 'queue' && !ix.explore ? 'queue' : landing && (params.get('view') === 'guide' || (!linked && params.get('view') !== 'map')) ? 'guide' : 'map',
@@ -350,6 +350,10 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
               <span className="pr-name">{meta.pr.title}</span>
               <span className="pr-go">↗</span>
             </a>
+          ) : meta.change ? (
+            <span className="rev" title={meta.change.source}>
+              {meta.change.title ?? meta.change.source}
+            </span>
           ) : (
             <span className="mono rev">
               {meta.base} → {meta.head === 'WORKING' ? 'working tree' : meta.head}

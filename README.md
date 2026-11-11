@@ -263,6 +263,20 @@ On each pull request, the Action:
 
 Inputs: `provider`, `model`, `anthropic-api-key`, `openai-api-key`, `openai-base-url`, `base`, `fail-on`, `comment`, `descriptions`, `include-source`. Output: `risk`.
 
+### Any other review tool: review a patch file
+
+For GitLab, Gerrit, Phabricator, internal tools, or a diff someone sent you: download the change as a `.diff` or `.patch` and point CodeLens at a local clone it applies to.
+
+```bash
+# In a clone checked out at the change's base revision
+npx @blong8334/codelens diff ~/Downloads/change.diff -p claude-code
+
+# Or from the clipboard, against a given base; --key keeps your accepted changes across revisions
+pbpaste | npx @blong8334/codelens diff - --base origin/main --key CR-1234 --title "Retry failed uploads"
+```
+
+The patch is applied as a commit object only. Your working tree, index and branches are not touched. `git format-patch` files supply the title and description; otherwise, pass `--title` and `--description` (`@file` reads it from a file). Use `--strip 0` when the patch's paths have no `a/` and `b/` prefixes, and `--directory <dir>` when it was made inside a subfolder.
+
 ## Review your own diffs
 
 ```bash

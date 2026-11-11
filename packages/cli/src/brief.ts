@@ -76,8 +76,8 @@ export function briefInput(graph: CodeGraph): BriefInput {
     .slice(0, MAX_CHANGES)
     .map((node, i) => ({ key: `c${i + 1}`, node, untouchedCallers: report.changes.find((c) => c.id === node.id)?.callers ?? 0 }));
   return {
-    title: graph.meta.pr?.title,
-    description: graph.meta.pr?.body,
+    title: graph.meta.pr?.title ?? graph.meta.change?.title,
+    description: graph.meta.pr?.body ?? graph.meta.change?.description,
     changes,
     entryPoints: report.entryPoints.map(({ name, kind, reaches }) => ({ name, kind, reaches })),
     effects: report.effects,

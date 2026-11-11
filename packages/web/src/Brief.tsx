@@ -20,6 +20,7 @@ interface Props {
 export function Brief({ ix, onStart, onMap, nav, onOpenDiff, onStartReview }: Props) {
   const { graph } = ix;
   const pr = graph.meta.pr;
+  const change = graph.meta.change;
   const brief = graph.enrichment?.brief ?? fallbackBrief(ix);
   const risk = graph.enrichment?.overallRisk;
   const changed = graph.nodes.filter((n) => n.status !== 'unchanged');
@@ -63,9 +64,17 @@ export function Brief({ ix, onStart, onMap, nav, onOpenDiff, onStartReview }: Pr
                 </a>
               </div>
             </>
+          ) : change?.title ? (
+            <>
+              <h1 className="brief-title">{change.title}</h1>
+              <div className="guide-meta">
+                <span className="mono">{change.source}</span>
+                <span className="mono">on {graph.meta.base.slice(0, 7)}</span>
+              </div>
+            </>
           ) : (
             <h1 className="brief-title mono">
-              {graph.meta.base} → {graph.meta.head === 'WORKING' ? 'working tree' : graph.meta.head}
+              {change ? change.source : `${graph.meta.base} → ${graph.meta.head === 'WORKING' ? 'working tree' : graph.meta.head}`}
             </h1>
           )}
           <div className="brief-facts">
@@ -108,6 +117,13 @@ export function Brief({ ix, onStart, onMap, nav, onOpenDiff, onStartReview }: Pr
           {pr && (
             <Section title="The author's description">
               <div className="brief-description">{pr.body.trim() ? <Markdown text={pr.body} /> : <p className="muted">No description.</p>}</div>
+            </Section>
+          )}
+          {!pr && change?.description && (
+            <Section title="The author's description">
+              <div className="brief-description">
+                <Markdown text={change.description} />
+              </div>
             </Section>
           )}
           <Section title="What this change does" hint={brief.source === 'llm' ? 'Written by the model from the description and the diffs' : 'Assembled from the analysis · run with -p claude-code for a written brief'}>
