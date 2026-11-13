@@ -2,6 +2,8 @@
 
 **AI is writing more of our code. Someone still has to review it.**
 
+![CodeLens reviewing a change: the brief, the review queue one change at a time, asking Claude what could break for the callers, and the impact map](docs/screenshots/demo.gif)
+
 Coding agents can open a 40-file pull request in minutes. Reviewing it still means reading line diffs in alphabetical file order and reconstructing, in your head, what changed, what calls it, and what could break. Review has become the bottleneck, and the place where AI-written bugs slip through.
 
 CodeLens is built to make review keep up. It turns a pull request into something you can understand quickly and then check thoroughly. It opens the PR (or a local branch) as a **brief**: what the change does and why, concrete risks, things to check, and where to start reading. Then you work through it in a **review queue**, one change at a time. Each step shows:
@@ -11,8 +13,6 @@ CodeLens is built to make review keep up. It turns a pull request into something
 - which databases and APIs it touches.
 
 Press `a` to accept and move on. The **map** of callers, callees and effects is one key away.
-
-![The review queue: one change at a time, with the model's note, risks, the function's diff and its callers](docs/screenshots/queue.png)
 
 The model writes the explanations. The checks come from the code itself: the call graph, who depends on each change, broken signatures, and what each change touches. Your judgment is spent where it matters, and nothing is accepted until you accept it.
 

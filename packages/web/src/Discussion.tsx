@@ -214,17 +214,28 @@ function blocks(text: string, keyPrefix: string): ReactNode[] {
 }
 
 function Inline({ text, bare }: { text: string; bare?: boolean }) {
-  // `code`, [label](https://…) and bare https:// links; everything else stays text.
-  const tokens = text.split(/(`[^`\n]+`|\[[^\]\n]+\]\(https?:\/\/[^)\s]+\)|https?:\/\/[^\s)]+)/g);
-  const content = tokens.map((t, i) => {
-    if (t.startsWith('`') && t.endsWith('`') && t.length > 2) return <code key={i}>{t.slice(1, -1)}</code>;
-    const link = t.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
-        if (link) return <a key={i} href={link[2]} target="_blank" rel="noreferrer">{link[1]}</a>;
-        if (/^https?:\/\//.test(t)) return <a key={i} href={t} target="_blank" rel="noreferrer">{t}</a>;
-        // **bold**: emphasized, never HTML.
-        return t.split(/(\*\*[^*]+\*\*)/g).map((b, k) => (b.startsWith('**') && b.endsWith('**') && b.length > 4 ? <strong key={`${i}-${k}`}>{b.slice(2, -2)}</strong> : b));
-      });
+  const content = inline(text, 'i');
   return bare ? <>{content}</> : <p className="md-p">{content}</p>;
+}
+
+// `code` (any number of backticks, so code can contain one), **bold** (which may hold code),
+// [label](https://…) and bare https:// links; everything else stays text, never HTML.
+const INLINE = /(`+)([^\n]*?[^`\n])\1(?!`)|\*\*(.+?)\*\*|\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s)]+)/g;
+
+function inline(text: string, key: string): ReactNode[] {
+  const out: ReactNode[] = [];
+  let last = 0;
+  for (const m of text.matchAll(INLINE)) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const k = `${key}-${m.index}`;
+    if (m[1]) out.push(<code key={k}>{m[1].length > 1 ? m[2].replace(/^ (.*) $/, '$1') : m[2]}</code>);
+    else if (m[3] !== undefined) out.push(<strong key={k}>{inline(m[3], k)}</strong>);
+    else if (m[4]) out.push(<a key={k} href={m[5]} target="_blank" rel="noreferrer">{m[4]}</a>);
+    else out.push(<a key={k} href={m[6]} target="_blank" rel="noreferrer">{m[6]}</a>);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
 }
 
 function Comment({ author, body, createdAt, url }: { author: string; body: string; createdAt: string; url: string }) {
