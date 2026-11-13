@@ -1,6 +1,6 @@
 {
   "name": "@blong8334/codelens",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Visual-first code review and code exploration: impact maps, review briefs and a one-change-at-a-time review queue, for any repository or GitHub pull request.",
   "keywords": [
     "code-review",

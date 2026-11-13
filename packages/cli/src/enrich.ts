@@ -10,6 +10,7 @@ import type {
   Signature,
 } from './types.ts';
 import { createHash } from 'node:crypto';
+import { excludedFromModel } from './preferences.ts';
 import { describeGraph, heuristicDescriber, type Describer } from './purpose.ts';
 
 const hashOf = (...parts: string[]) => createHash('sha1').update(parts.join('\0')).digest('hex');
@@ -97,6 +98,9 @@ export async function enrich(
     );
   const cached = cacheable ? await opts.store!.getDescriptions(contexts.map(keyOf)) : new Map<string, unknown>();
   const fresh: { key: string; kind: 'change'; value: unknown }[] = [];
+  const excluded = excludedFromModel(graph);
+  const skippedTests = changed.filter(excluded).length;
+  if (skippedTests && provider.name !== 'heuristic') log(`  ${skippedTests} test change${skippedTests === 1 ? '' : 's'} not sent to ${provider.name} (skipped by your preferences)`);
   let reused = 0;
   await mapLimit(contexts, opts.concurrency ?? 4, async (ctx) => {
     const key = keyOf(ctx);
@@ -106,8 +110,9 @@ export async function enrich(
       reused++;
       return;
     }
-    // A move or rename with the body otherwise unchanged needs no model to explain it.
-    if (ctx.node.moved?.exact) {
+    // A move or rename with the body otherwise unchanged needs no model to explain it, and tests the
+    // reviewer skips are not sent to it at all.
+    if (ctx.node.moved?.exact || excluded(ctx.node)) {
       ctx.node.enrichment = ctx.heuristic;
       return;
     }
@@ -130,7 +135,7 @@ export async function enrich(
   const summaryKey = hashOf(provider.name, 'summary', ...ranked.map((n) => `${n.id}:${n.enrichment!.blastRadius}:${n.enrichment!.summary}`));
   const storedSummary = cacheable ? ((await opts.store!.getDescriptions([summaryKey])).get(summaryKey) as string | undefined) : undefined;
   try {
-    summary = storedSummary ?? (await provider.summarize(graph, ranked));
+    summary = storedSummary ?? (await provider.summarize(graph, ranked.filter((n) => !excluded(n))));
     if (cacheable && !storedSummary) fresh.push({ key: summaryKey, kind: 'change', value: summary });
   } catch (err) {
     log(`  ! summary failed (${(err as Error).message}); using heuristics`);
@@ -146,6 +151,7 @@ export async function enrich(
       store: opts.store,
       concurrency: opts.concurrency ?? 4,
       log,
+      skip: excluded,
     });
   }
   return graph;

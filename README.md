@@ -307,7 +307,7 @@ Skip:
 - renames and moves with no logic change
 ```
 
-A **Skip** list that mentions tests or renames/moves takes those out of the review queue. They're listed under "Skipped by your preferences" and don't count as left to review. Use `--prefs <file>` for a different file, or `--no-prefs` to ignore it for one run.
+A **Skip** (or **Exclude**) list that mentions tests or renames/moves takes those out of the review queue. They're listed under "Skipped by your preferences", with their diffs, and don't count as left to review. Skipped tests are never sent to the model: they get the offline analysis only, which saves time and tokens. Use `--prefs <file>` for a different file, or `--no-prefs` to ignore it for one run.
 
 Independent of preferences:
 - **Moves and renames** are matched by their body. A function moved or renamed without other edits is one "moved" item, not a deletion plus an addition.

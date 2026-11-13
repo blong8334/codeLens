@@ -4,6 +4,7 @@ import { Compose, ThreadView, useDiscussion } from './Discussion.tsx';
 import { codeLinks } from './links.ts';
 import { MarkBox, ReviewProgress, useMarks } from './Marks.tsx';
 import type { PrThread, ReviewFile } from '../../cli/src/types.ts';
+import { notAShortcut } from './shortcuts.ts';
 
 type Kind = 'add' | 'del' | 'ctx';
 interface Line {
@@ -261,7 +262,7 @@ export function DiffViewer({ ix, path, fnId, onClose, onOpen }: Props) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (notAShortcut(e)) return;
       const handled = e.key === 'Escape' ? (onClose(), true) : e.key === ']' ? (step(1), true) : e.key === '[' ? (step(-1), true) : e.key === 'v' ? (toggleSplit(), true) : false;
       if (handled) {
         e.preventDefault();

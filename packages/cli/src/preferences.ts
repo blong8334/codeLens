@@ -1,11 +1,12 @@
 // A reviewer's preferences: what they care about and what they skip, in their own words. Optional;
 // without a file, reviews work exactly as before. The text goes to the model (brief and change
-// notes); a "Skip" list naming tests or renames/moves also takes those out of the review queue.
+// notes); a "Skip" list naming tests or renames/moves also takes those out of the review queue,
+// and skipped tests are never sent to the model at all.
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { isTestFile } from './hierarchy.ts';
-import type { CodeGraph, ReviewPreferences } from './types.ts';
+import type { CodeGraph, FnNode, ReviewPreferences } from './types.ts';
 
 export const defaultPreferencesPath = () => process.env.CODELENS_PREFERENCES ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'codelens', 'preferences.md');
 
@@ -34,11 +35,11 @@ export function parsePreferences(text: string, source: string): ReviewPreference
   let inSkip = false;
   for (const line of trimmed.split('\n')) {
     const heading = line.match(/^\s*(?:#+\s*)?([^-*\s].*?):?\s*$/);
-    const skipHead = /^(?:i\s+)?(?:skip|ignore|don'?t care|do not care|could not care less|not interested)/i;
+    const skipHead = /^(?:i\s+)?(?:skip|ignore|exclude|don'?t care|do not care|could not care less|not interested)/i;
     if (heading && !/^\s*[-*]/.test(line)) {
       const words = heading[1].replace(/^#+\s*/, '');
       inSkip = skipHead.test(words);
-      const rest = words.match(/^(?:i\s+)?(?:skip|ignore|don'?t care about|do not care about|could not care less about)\s*:?\s*(.+)$/i)?.[1];
+      const rest = words.match(/^(?:i\s+)?(?:skip|ignore|exclude|don'?t care about|do not care about|could not care less about)\s*:?\s*(.+)$/i)?.[1];
       if (inSkip && rest && !/^about$/i.test(rest)) skips.push(rest);
       continue;
     }
@@ -51,6 +52,15 @@ export function parsePreferences(text: string, source: string): ReviewPreference
     skipTests: /\btests?\b|\btesting\b|\bspecs?\b/i.test(skip),
     skipMoves: /renam|\bmove|moving|lift|shift|relocat/i.test(skip),
   };
+}
+
+/**
+ * Functions the model never sees under these preferences: skipped tests (their diffs are still in
+ * the review; they just get the offline analysis, which costs nothing).
+ */
+export function excludedFromModel(graph: CodeGraph): (n: FnNode) => boolean {
+  const prefs = graph.review?.preferences;
+  return (n) => !!prefs?.skipTests && isTestFile(n.file);
 }
 
 /** Attach preferences to a review graph, and list what they skip (tests, unchanged moves). */

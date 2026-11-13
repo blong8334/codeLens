@@ -15,6 +15,7 @@ import { invariantLayer } from './layers.ts';
 import { nodeTypes } from './nodes.tsx';
 import { Panel } from './Panel.tsx';
 import { DiffView } from './DiffView.tsx';
+import { notAShortcut } from './shortcuts.ts';
 
 export function App() {
   const [graph, setGraph] = useState<CodeGraph | null>(null);
@@ -295,7 +296,7 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (notAShortcut(e)) return;
       if (e.key === '/') {
         e.preventDefault();
         searchRef.current?.focus();

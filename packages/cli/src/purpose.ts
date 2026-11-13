@@ -40,7 +40,7 @@ export async function describeGraph(
   graph: CodeGraph,
   describer: Describer,
   fallback: Describer,
-  opts: { store?: Store; concurrency: number; log: (m: string) => void },
+  opts: { store?: Store; concurrency: number; log: (m: string) => void; /** Functions described offline only (never sent to the model). */ skip?: (n: FnNode) => boolean },
 ): Promise<{ described: number; cached: number }> {
   const cache = new DescriptionCache(opts.store);
   let described = 0;
@@ -55,8 +55,16 @@ export async function describeGraph(
   // ---- functions ----
   const fnKey = (n: FnNode) => hash(describer.name, 'fn', n.file, n.qualifiedName, n.source);
   const pending: FnNode[] = [];
-  await cache.prefetch(graph.nodes.map(fnKey));
+  await cache.prefetch(graph.nodes.filter((n) => !opts.skip?.(n)).map(fnKey));
+  const offline = opts.skip ? graph.nodes.filter(opts.skip) : [];
+  if (offline.length) {
+    const items = offline.map((node, i) => ({ key: `f${i + 1}`, node, callers: (callers.get(node.id) ?? []).slice(0, 8), callees: (callees.get(node.id) ?? []).slice(0, 8) }));
+    const out = await fallback.describeFunctions(items);
+    for (const item of items) item.node.purpose = { ...out.get(item.key)!, source: sourceOf(fallback, item.node) };
+  }
+  const skipped = new Set(offline);
   for (const n of graph.nodes) {
+    if (skipped.has(n)) continue;
     const hit = cache.get<{ what: string; why: string }>(fnKey(n));
     if (hit) n.purpose = { ...hit, source: sourceOf(describer) };
     else pending.push(n);
@@ -64,7 +72,7 @@ export async function describeGraph(
   // Batch by file so each request carries coherent context.
   pending.sort((a, b) => a.file.localeCompare(b.file) || a.range.startLine - b.range.startLine);
   const fnBatches = chunk(pending, FN_BATCH);
-  if (pending.length) opts.log(`  describing ${pending.length} functions in ${fnBatches.length} batch${fnBatches.length > 1 ? 'es' : ''} (${graph.nodes.length - pending.length} cached)`);
+  if (pending.length) opts.log(`  describing ${pending.length} functions in ${fnBatches.length} batch${fnBatches.length > 1 ? 'es' : ''} (${graph.nodes.length - pending.length - skipped.size} cached)`);
   await mapLimit(fnBatches, opts.concurrency, async (batch) => {
     const items = batch.map((node, i) => ({
       key: `f${i + 1}`,
@@ -113,6 +121,11 @@ export async function describeGraph(
       // A group with a single child says the same thing as that child: no request needed.
       if (children.length === 1) {
         group.summary = children[0].summary;
+        continue;
+      }
+      // A file of skipped functions (tests, under the reviewer's preferences) is summarized offline.
+      if (kind === 'file' && group.fnIds.length && group.fnIds.every((id) => skipped.has(byId.get(id)!))) {
+        group.summary = (await fallback.describeGroups([{ key: 'g', group, children }])).get('g');
         continue;
       }
       candidates.push({ group, children: children.slice(0, 20), key: hash(describer.name, 'group', kind, group.label, ...children.map((c) => `${c.label}:${c.summary}`)) });

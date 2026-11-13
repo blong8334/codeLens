@@ -122,3 +122,41 @@ test('applyPreferences lists skipped tests and exact moves, and files made only 
   applyPreferences(plain, undefined);
   assert.equal(plain.review!.skipped, undefined);
 });
+
+test('tests skipped by preferences are never sent to the model; their diffs stay in the review', async () => {
+  const dir = repo(
+    { 'src/a.ts': 'export function price(n: number) {\n  return n;\n}\n', 'test/a.test.ts': 'export function fixture() {\n  return 1;\n}\n' },
+    { 'src/a.ts': 'export function price(n: number) {\n  return n * 2;\n}\n', 'test/a.test.ts': 'export function fixture() {\n  return 2;\n}\n' },
+  );
+  const seen: string[] = [];
+  const model: typeof heuristicProvider = {
+    ...heuristicProvider,
+    name: 'recording',
+    async enrichNode(ctx) {
+      seen.push(`change:${ctx.node.file}`);
+      return { ...ctx.heuristic, source: 'llm' };
+    },
+    async summarize(graph, ranked) {
+      seen.push(...ranked.map((n) => `summary:${n.file}`));
+      return 'ok';
+    },
+    async describeFunctions(items) {
+      seen.push(...items.map((i) => `purpose:${i.node.file}`));
+      return heuristicProvider.describeFunctions(items);
+    },
+  };
+  const g = await inspect(dir, { base: 'HEAD~1', head: 'HEAD', maxDepth: 3, full: false });
+  applyPreferences(g, parsePreferences('Exclude:\n- tests\n', 'p'));
+  await enrich(g, model);
+  assert.ok(seen.includes('change:src/a.ts') && seen.includes('purpose:src/a.ts'));
+  assert.deepEqual(seen.filter((s) => s.includes('test/')), []);
+  const fixture = g.nodes.find((n) => n.file === 'test/a.test.ts')!;
+  assert.equal(fixture.enrichment!.source, 'heuristic');
+  assert.ok(fixture.diff?.includes('+  return 2;'));
+  assert.ok(fixture.purpose?.what);
+
+  // Without the preference, tests go to the model like anything else.
+  seen.length = 0;
+  await enrich(await inspect(dir, { base: 'HEAD~1', head: 'HEAD', maxDepth: 3, full: false }), model);
+  assert.ok(seen.includes('change:test/a.test.ts'));
+});

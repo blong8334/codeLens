@@ -8,6 +8,7 @@ import { ResetMarks, ReviewProgress, useMarks, type MarkState } from './Marks.ts
 import { NavButtons, Prose, type NavControls } from './Panel.tsx';
 import { RiskBar, StatusBadge } from './nodes.tsx';
 import type { ReviewFile } from '../../cli/src/types.ts';
+import { notAShortcut } from './shortcuts.ts';
 
 /** One thing to review: a changed function, or a changed file with no functions (README, config…). */
 export type QueueItem =
@@ -111,7 +112,7 @@ export function ReviewQueue({ ix, nav, at, onAt, onMap, onDiff }: Props) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (notAShortcut(e)) return;
       const keys: Record<string, () => void> = {
         a: accept,
         u: undo,
