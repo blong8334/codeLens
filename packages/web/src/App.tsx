@@ -16,6 +16,7 @@ import { nodeTypes } from './nodes.tsx';
 import { Panel } from './Panel.tsx';
 import { DiffView } from './DiffView.tsx';
 import { notAShortcut } from './shortcuts.ts';
+import { FeedbackButton } from './Feedback.tsx';
 
 export function App() {
   const [graph, setGraph] = useState<CodeGraph | null>(null);
@@ -399,6 +400,7 @@ function ReviewView({ graph, version, onReset }: { graph: CodeGraph; version: nu
             </div>
           )}
         </div>
+        <FeedbackButton />
         <button className="btn btn-ghost" onClick={onReset} title="Load another graph">
           Open…
         </button>

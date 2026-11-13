@@ -13,6 +13,7 @@ import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { VERSION } from './version.ts';
 
 // Published: the built canvas ships next to the bundle (dist/web). In the repo: packages/web,
 // rebuilt on demand when its sources change.
@@ -132,7 +133,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL, ctx: { g
   const graph = JSON.parse(await readFile(ctx.graphPath, 'utf8')) as CodeGraph;
   if (url.pathname === '/api/session' && req.method === 'GET') {
     const canPost = !!graph.meta.pr && canPostToGitHub();
-    return send(200, { pr: !!graph.meta.pr, canPost, login: canPost ? await viewerLogin() : undefined, marks: !!graph.review, chat: ctx.chat ? { provider: ctx.chat.provider.name, canRead: ctx.chat.canRead } : null });
+    return send(200, { pr: !!graph.meta.pr, canPost, login: canPost ? await viewerLogin() : undefined, marks: !!graph.review, version: VERSION, chat: ctx.chat ? { provider: ctx.chat.provider.name, canRead: ctx.chat.canRead } : null });
   }
 
   // "Ask": questions about the change, answered by the review's model.

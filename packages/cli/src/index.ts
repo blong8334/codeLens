@@ -6,7 +6,6 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readFileSync } from 'node:fs';
 import { inspect } from './graph.ts';
 import { enrich, heuristicProvider, type EnrichmentProvider } from './enrich.ts';
 import { explore } from './explore.ts';
@@ -19,6 +18,7 @@ import { buildGuide } from './guide.ts';
 import { describeGraph } from './purpose.ts';
 import { cacheDir, defaultStorePath, openStore as openStoreAt, type Store } from './store/index.ts';
 import type { CodeGraph } from './types.ts';
+import { VERSION } from './version.ts';
 
 const log = (msg: string) => console.error(msg);
 
@@ -91,7 +91,7 @@ const program = new Command()
   .name('codelens')
   .description('Review a diff, or explore a whole codebase, as a layered visual call graph.')
   // package.json sits one level up from both src/index.ts and the bundled dist/codelens.js.
-  .version(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version);
+  .version(VERSION);
 
 program
   .command('inspect')
